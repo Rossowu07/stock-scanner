@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import requests
 import pandas as pd
@@ -11,7 +12,30 @@ from typing import List, Optional
 import json
 import os
 
-app = FastAPI(title="台股突破訊號掃描器")
+LC_JS_PATH = "static/lc.js"
+LC_CDN_URL = "https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"
+
+def download_lc_if_needed():
+    if os.path.exists(LC_JS_PATH) and os.path.getsize(LC_JS_PATH) > 50000:
+        print("✅ LightweightCharts 已存在，跳過下載")
+        return
+    print("📦 下載 LightweightCharts...")
+    try:
+        r = requests.get(LC_CDN_URL, timeout=30)
+        r.raise_for_status()
+        os.makedirs("static", exist_ok=True)
+        with open(LC_JS_PATH, "wb") as f:
+            f.write(r.content)
+        print(f"✅ 下載完成 ({len(r.content)} bytes)")
+    except Exception as e:
+        print(f"⚠️ 下載失敗: {e}，將使用 CDN fallback")
+
+@asynccontextmanager
+async def lifespan(app):
+    download_lc_if_needed()
+    yield
+
+app = FastAPI(title="台股突破訊號掃描器", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -115,7 +139,7 @@ def calc_rsi(closes: pd.Series, period=14) -> float:
     delta = closes.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss.replace(0, 1e-9)
+    rs = gain / loss.where(loss != 0, other=1e-9)
     return float((100 - 100 / (1 + rs)).iloc[-1])
 
 def calc_macd(closes: pd.Series):
@@ -125,6 +149,15 @@ def calc_macd(closes: pd.Series):
     sig  = line.ewm(span=9, adjust=False).mean()
     hist = line - sig
     return float(hist.iloc[-1]), float(hist.iloc[-2]) if len(hist) > 1 else 0.0
+
+def safe_float(v, decimals=2):
+    """把 NaN/Inf 換成 0，避免 JSON 序列化失敗"""
+    import math
+    if v is None: return 0.0
+    try:
+        f = float(v)
+        return 0.0 if (math.isnan(f) or math.isinf(f)) else round(f, decimals)
+    except: return 0.0
 
 def analyze(stock_id: str, df: pd.DataFrame, cfg: ScanRequest) -> dict:
     closes  = df['close']
@@ -163,16 +196,16 @@ def analyze(stock_id: str, df: pd.DataFrame, cfg: ScanRequest) -> dict:
     return {
         'code': stock_id,
         'name': STOCK_NAMES.get(stock_id, stock_id),
-        'price': round(price, 2),
-        'change_pct': round(change_pct, 2),
-        'vol_ratio': round(vol_ratio, 2),
-        'rsi': round(rsi, 1),
-        'ma5': round(ma5, 2),
-        'ma10': round(ma10, 2),
-        'ma20': round(ma20, 2),
-        'macd_hist': round(hist_now, 4),
+        'price': safe_float(price, 2),
+        'change_pct': safe_float(change_pct, 2),
+        'vol_ratio': safe_float(vol_ratio, 2),
+        'rsi': safe_float(rsi, 1),
+        'ma5': safe_float(ma5, 2),
+        'ma10': safe_float(ma10, 2),
+        'ma20': safe_float(ma20, 2),
+        'macd_hist': safe_float(hist_now, 4),
         'score': score,
-        'score_pct': round(score_pct, 1),
+        'score_pct': safe_float(score_pct, 1),
         'strength': strength,
         **{k: signals[k] for k in signals},
         '_df': df,
@@ -231,34 +264,76 @@ async def scan(req: ScanRequest):
         'success': len(results),
     }
 
+def clean(lst):
+    """把 NaN / Inf / None 換成 None，確保 JSON 序列化不崩潰"""
+    import math
+    result = []
+    for v in lst:
+        try:
+            if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+                result.append(None)
+            else:
+                result.append(round(float(v), 4))
+        except Exception:
+            result.append(None)
+    return result
+
 @app.get("/api/chart/{code}")
 async def get_chart(code: str, token: str):
+    import traceback
     try:
         df = fetch_finmind(code, token, days=120)
-        df = df.tail(60).copy()
-        df['ma5']  = df['close'].rolling(5).mean().round(2)
-        df['ma10'] = df['close'].rolling(10).mean().round(2)
-        df['ma20'] = df['close'].rolling(20).mean().round(2)
-        e12 = df['close'].ewm(span=12, adjust=False).mean()
-        e26 = df['close'].ewm(span=26, adjust=False).mean()
-        ml  = e12 - e26
-        df['macd_hist'] = (ml - ml.ewm(span=9, adjust=False).mean()).round(4)
-        delta = df['close'].diff()
-        gain  = delta.clip(lower=0).rolling(14).mean()
-        loss  = (-delta.clip(upper=0)).rolling(14).mean()
-        df['rsi'] = (100 - 100 / (1 + gain / loss.replace(0, 1e-9))).round(1)
+        cols = df.columns.tolist()
+        print(f"[chart] {code} 欄位: {cols}")
+
+        df = df.tail(60).copy().reset_index(drop=True)
+
+        # 安全取欄位——FinMind 欄位名稱保護
+        def get_col(name, fallback=None):
+            if name in df.columns:
+                return pd.to_numeric(df[name], errors='coerce')
+            if fallback and fallback in df.columns:
+                return pd.to_numeric(df[fallback], errors='coerce')
+            return pd.Series([None] * len(df))
+
+        close_s  = get_col('close')
+        open_s   = get_col('open').fillna(close_s)
+        high_s   = get_col('max', 'high').fillna(close_s)
+        low_s    = get_col('min', 'low').fillna(close_s)
+        vol_s    = get_col('Trading_Volume', 'volume').fillna(0)
+
+        # 均線
+        ma5  = close_s.rolling(5,  min_periods=1).mean()
+        ma10 = close_s.rolling(10, min_periods=1).mean()
+        ma20 = close_s.rolling(20, min_periods=1).mean()
+
+        # MACD
+        e12  = close_s.ewm(span=12, adjust=False).mean()
+        e26  = close_s.ewm(span=26, adjust=False).mean()
+        ml   = e12 - e26
+        sig  = ml.ewm(span=9, adjust=False).mean()
+        macd = (ml - sig)
+
+        # RSI
+        delta = close_s.diff()
+        gain  = delta.clip(lower=0).rolling(14, min_periods=1).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
+        rs    = gain / loss.where(loss != 0, other=1e-9)
+        rsi   = 100 - 100 / (1 + rs)
+
         return {
             'dates': df['date'].tolist(),
-            'open':  df['open'].round(2).tolist(),
-            'high':  df['max'].round(2).tolist(),
-            'low':   df['min'].round(2).tolist(),
-            'close': df['close'].round(2).tolist(),
-            'vol':   df['Trading_Volume'].astype(int).tolist(),
-            'ma5':   df['ma5'].tolist(),
-            'ma10':  df['ma10'].tolist(),
-            'ma20':  df['ma20'].tolist(),
-            'macd':  df['macd_hist'].tolist(),
-            'rsi':   df['rsi'].tolist(),
+            'open':  clean(open_s.tolist()),
+            'high':  clean(high_s.tolist()),
+            'low':   clean(low_s.tolist()),
+            'close': clean(close_s.tolist()),
+            'vol':   clean(vol_s.tolist()),
+            'ma5':   clean(ma5.tolist()),
+            'ma10':  clean(ma10.tolist()),
+            'ma20':  clean(ma20.tolist()),
+            'macd':  clean(macd.tolist()),
+            'rsi':   clean(rsi.tolist()),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
