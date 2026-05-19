@@ -321,18 +321,115 @@ async def get_chart(code: str, token: str):
         rs    = gain / loss.where(loss != 0, other=1e-9)
         rsi   = 100 - 100 / (1 + rs)
 
+        # 布林通道 (20日, 2倍標準差)
+        bb_mid   = close_s.rolling(20, min_periods=1).mean()
+        bb_std   = close_s.rolling(20, min_periods=1).std().fillna(0)
+        bb_upper = bb_mid + 2 * bb_std
+        bb_lower = bb_mid - 2 * bb_std
+
         return {
-            'dates': df['date'].tolist(),
-            'open':  clean(open_s.tolist()),
-            'high':  clean(high_s.tolist()),
-            'low':   clean(low_s.tolist()),
-            'close': clean(close_s.tolist()),
-            'vol':   clean(vol_s.tolist()),
-            'ma5':   clean(ma5.tolist()),
-            'ma10':  clean(ma10.tolist()),
-            'ma20':  clean(ma20.tolist()),
-            'macd':  clean(macd.tolist()),
-            'rsi':   clean(rsi.tolist()),
+            'dates':    df['date'].tolist(),
+            'open':     clean(open_s.tolist()),
+            'high':     clean(high_s.tolist()),
+            'low':      clean(low_s.tolist()),
+            'close':    clean(close_s.tolist()),
+            'vol':      clean(vol_s.tolist()),
+            'ma5':      clean(ma5.tolist()),
+            'ma10':     clean(ma10.tolist()),
+            'ma20':     clean(ma20.tolist()),
+            'macd':     clean(macd.tolist()),
+            'rsi':      clean(rsi.tolist()),
+            'bb_upper': clean(bb_upper.tolist()),
+            'bb_mid':   clean(bb_mid.tolist()),
+            'bb_lower': clean(bb_lower.tolist()),
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+@app.get("/api/intraday/{code}")
+async def get_intraday(code: str, token: str):
+    """抓取當日盤中分鐘資料（FinMind TaiwanStockPriceTick 或 TaiwanStockPriceMinute）"""
+    import traceback
+    try:
+        today = datetime.today().strftime('%Y-%m-%d')
+        # 先試分鐘線
+        resp = requests.get(
+            'https://api.finmindtrade.com/api/v4/data',
+            params={
+                'dataset': 'TaiwanStockPriceMinute',
+                'data_id': code,
+                'start_date': today,
+                'end_date': today,
+                'token': token,
+            },
+            timeout=15
+        )
+        data = resp.json()
+        rows = data.get('data', [])
+
+        # 非交易日或盤前：退回前一個交易日
+        if not rows:
+            yesterday = (datetime.today() - timedelta(days=1)).strftime('%Y-%m-%d')
+            resp2 = requests.get(
+                'https://api.finmindtrade.com/api/v4/data',
+                params={
+                    'dataset': 'TaiwanStockPriceMinute',
+                    'data_id': code,
+                    'start_date': yesterday,
+                    'end_date': yesterday,
+                    'token': token,
+                },
+                timeout=15
+            )
+            data2 = resp2.json()
+            rows = data2.get('data', [])
+            date_label = yesterday
+        else:
+            date_label = today
+
+        if not rows:
+            return {'date': date_label, 'times': [], 'open': [], 'high': [],
+                    'low': [], 'close': [], 'vol': [], 'vwap': [], 'msg': '無盤中資料'}
+
+        df = pd.DataFrame(rows)
+        for col in ['open','close','max','min','volume','Trading_Volume']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        close_col = 'close'
+        vol_col   = 'volume' if 'volume' in df.columns else 'Trading_Volume'
+        high_col  = 'max'    if 'max'    in df.columns else 'high'
+        low_col   = 'min'    if 'min'    in df.columns else 'low'
+        open_col  = 'open'
+
+        # 時間欄位處理
+        time_col = 'datetime' if 'datetime' in df.columns else 'date'
+        df = df.sort_values(time_col).reset_index(drop=True)
+
+        close_s = df[close_col].fillna(method='ffill').fillna(0)
+        vol_s   = df[vol_col].fillna(0) if vol_col in df.columns else pd.Series([0]*len(df))
+
+        # VWAP（成交量加權平均價）
+        cum_vol = vol_s.cumsum()
+        cum_pv  = (close_s * vol_s).cumsum()
+        vwap    = (cum_pv / cum_vol.where(cum_vol > 0, other=1)).round(2)
+
+        # 時間標籤
+        if 'datetime' in df.columns:
+            times = df['datetime'].astype(str).str[-8:].str[:5].tolist()  # HH:MM
+        else:
+            times = df['date'].astype(str).tolist()
+
+        return {
+            'date':   date_label,
+            'times':  times,
+            'open':   clean(df[open_col].tolist() if open_col in df.columns else close_s.tolist()),
+            'high':   clean(df[high_col].tolist() if high_col in df.columns else close_s.tolist()),
+            'low':    clean(df[low_col].tolist()  if low_col  in df.columns else close_s.tolist()),
+            'close':  clean(close_s.tolist()),
+            'vol':    clean(vol_s.tolist()),
+            'vwap':   clean(vwap.tolist()),
         }
     except Exception as e:
         traceback.print_exc()
