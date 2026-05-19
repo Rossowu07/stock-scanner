@@ -7,7 +7,16 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#ffffff">
 <title>台股掃描器</title>
-<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="/static/lc.js" onerror="this.onerror=null;this.src='https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js'"></script>
+<script>
+window.addEventListener('DOMContentLoaded', function() {
+  if (typeof LightweightCharts === 'undefined') {
+    var s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.js';
+    document.head.appendChild(s);
+  }
+});
+</script>
 <style>
 :root {
   --green: #1a7a4a; --green-light: #d4f1e4; --green-mid: #97c459;
@@ -208,6 +217,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div class="dtab" onclick="switchDTab('vol',this)">成交量</div>
     <div class="dtab" onclick="switchDTab('macd',this)">MACD</div>
     <div class="dtab" onclick="switchDTab('rsi',this)">RSI</div>
+    <div class="dtab" onclick="switchDTab('bb',this)">布林通道</div>
+    <div class="dtab" onclick="switchDTab('intraday',this)">盤中走勢</div>
     <div class="dtab" onclick="switchDTab('info',this)">指標摘要</div>
   </div>
   <div class="drawer-body">
@@ -232,6 +243,30 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
       <div class="chart-note">RSI(14)：強勢區間 55–75，虛線為參考線</div>
       <div class="chart-container" id="rsiEl"></div>
     </div>
+    <div id="dBb" style="display:none">
+      <div class="chart-legend">
+        <span><span class="dot-leg" style="background:#e74c3c"></span>上軌</span>
+        <span><span class="dot-leg" style="background:#888"></span>中軌(MA20)</span>
+        <span><span class="dot-leg" style="background:#3498db"></span>下軌</span>
+      </div>
+      <div class="chart-note">布林通道(20日,2σ)：價格觸及上軌偏貴，觸及下軌偏便宜，通道收窄代表即將變盤</div>
+      <div class="chart-container" id="bbEl"></div>
+    </div>
+    <div id="dIntraday" style="display:none">
+      <div id="intradayHeader" style="margin-bottom:8px">
+        <div class="chart-legend">
+          <span><span class="dot-leg" style="background:#3b82f6"></span>分鐘收盤</span>
+          <span><span class="dot-leg" style="background:#f39c12"></span>VWAP</span>
+          <span style="color:#e74c3c">■ 量增</span>
+          <span style="color:#2ecc71">■ 量縮</span>
+        </div>
+        <div class="chart-note" id="intradayDate"></div>
+      </div>
+      <div class="chart-container" id="intradayPriceEl"></div>
+      <div style="height:10px"></div>
+      <div class="chart-note">成交量</div>
+      <div style="position:relative;width:100%;height:100px" id="intradayVolEl"></div>
+    </div>
     <div id="dInfo" style="display:none">
       <div class="ind-grid" id="indGrid"></div>
     </div>
@@ -247,6 +282,7 @@ let activeCharts = [];
 let currentStock = null;
 let currentDTab = 'candle';
 let chartCache = {};
+let intradayCache = {};
 
 // ── Token ─────────────────────────────────────────────
 async function verifyToken() {
@@ -309,7 +345,7 @@ async function startScan() {
 
     allResults = data.results || [];
     if (data.errors?.length > 0 && allResults.length === 0) {
-      showAlert(`所有股票資料取得失敗，請確認 Token 是否有效`, 'err');
+      showAlert('所有股票資料取得失敗，請確認 Token 是否有效', 'err');
       return;
     }
     if (data.errors?.length > 0) {
@@ -320,6 +356,7 @@ async function startScan() {
     document.getElementById('summaryBox').style.display = 'grid';
     document.getElementById('filterBar').style.display = 'flex';
     chartCache = {};
+    intradayCache = {};
   } catch(e) {
     showAlert('掃描失敗：' + e.message, 'err');
   } finally {
@@ -380,11 +417,11 @@ function renderList() {
     const sigKeys = ['price_breakout','volume_surge','macd_positive','rsi_strong','ma_bullish'];
     const dots = sigKeys.map(k => `<div class="dot ${r[k] ? 'on' : 'off'}"></div>`).join('');
     const activeSigs = [];
-    if (r.price_breakout) activeSigs.push('價格突破');
-    if (r.volume_surge)   activeSigs.push('量能放大');
+    if (r.price_breakout)    activeSigs.push('價格突破');
+    if (r.volume_surge)      activeSigs.push('量能放大');
     if (r.macd_golden_cross) activeSigs.push('MACD金叉');
-    if (r.rsi_strong)     activeSigs.push('RSI強勢');
-    if (r.ma_bullish)     activeSigs.push('均線多頭');
+    if (r.rsi_strong)        activeSigs.push('RSI強勢');
+    if (r.ma_bullish)        activeSigs.push('均線多頭');
     const sigHint = activeSigs.length ? activeSigs.join('・') : '無訊號';
     const selected = currentStock === r.code ? ' selected' : '';
     return `
@@ -416,16 +453,16 @@ function renderList() {
 // ── 抽屜控制 ──────────────────────────────────────────
 async function openDrawer(code, name) {
   currentStock = code;
-  renderList(); // 更新 selected 狀態
+  renderList();
 
   document.getElementById('drawerTitle').textContent = `${code} ${name}`;
   const r = allResults.find(x => x.code === code);
   const sigs = [];
-  if (r?.price_breakout) sigs.push('價格突破');
-  if (r?.volume_surge)   sigs.push('量能放大');
+  if (r?.price_breakout)    sigs.push('價格突破');
+  if (r?.volume_surge)      sigs.push('量能放大');
   if (r?.macd_golden_cross) sigs.push('MACD金叉');
-  if (r?.rsi_strong)     sigs.push('RSI強勢');
-  if (r?.ma_bullish)     sigs.push('均線多頭');
+  if (r?.rsi_strong)        sigs.push('RSI強勢');
+  if (r?.ma_bullish)        sigs.push('均線多頭');
   document.getElementById('drawerSigs').innerHTML = sigs.length
     ? sigs.map(s => `<span class="sig-tag">${s}</span>`).join('')
     : '<span style="font-size:12px;color:#aaa">無符合訊號</span>';
@@ -434,7 +471,6 @@ async function openDrawer(code, name) {
   document.body.style.overflow = 'hidden';
 
   destroyCharts();
-  // 等抽屜 CSS transition (0.3s) 結束後容器才有正確寬度
   await new Promise(res => setTimeout(res, 350));
   await loadAndRender(code, currentDTab);
   if (r) buildIndGrid(r);
@@ -450,8 +486,10 @@ function closeDrawer() {
 
 async function switchDTab(tabId, btn) {
   currentDTab = tabId;
-  ['candle','vol','macd','rsi','info'].forEach(t => {
-    document.getElementById('d' + t.charAt(0).toUpperCase() + t.slice(1)).style.display = t === tabId ? 'block' : 'none';
+  const allTabs = ['candle','vol','macd','rsi','bb','intraday','info'];
+  allTabs.forEach(t => {
+    const el = document.getElementById('d' + t.charAt(0).toUpperCase() + t.slice(1));
+    if (el) el.style.display = t === tabId ? 'block' : 'none';
   });
   document.querySelectorAll('.dtab').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
@@ -465,53 +503,103 @@ async function switchDTab(tabId, btn) {
 function destroyCharts() {
   activeCharts.forEach(c => { try { c.remove(); } catch(e) {} });
   activeCharts = [];
-  ['candleEl','volEl','macdEl','rsiEl'].forEach(id => {
+  ['candleEl','volEl','macdEl','rsiEl','bbEl','intradayPriceEl','intradayVolEl'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.innerHTML = '';
   });
 }
 
+async function waitForLWC(timeout = 5000) {
+  const start = Date.now();
+  while (typeof LightweightCharts === 'undefined') {
+    if (Date.now() - start > timeout) throw new Error('LightweightCharts 圖表庫載入超時');
+    await new Promise(res => setTimeout(res, 100));
+  }
+}
+
 async function loadAndRender(code, tabId) {
   if (tabId === 'info') return;
+
+  const elMap = { candle:'candleEl', vol:'volEl', macd:'macdEl', rsi:'rsiEl', bb:'bbEl', intraday:'intradayPriceEl' };
+  const el = document.getElementById(elMap[tabId]);
+
+  try { await waitForLWC(); } catch(e) {
+    if (el) el.innerHTML = `<div style="padding:40px;text-align:center;color:#c0392b;font-size:13px">⚠️ 圖表庫載入失敗，請重新整理頁面</div>`;
+    return;
+  }
+
+  // 盤中走勢：用獨立快取和 API
+  if (tabId === 'intraday') {
+    let d = intradayCache[code];
+    if (!d) {
+      if (el) el.innerHTML = `<div style="padding:30px;text-align:center;color:#888;font-size:13px">載入盤中資料中...</div>`;
+      const token = document.getElementById('tokenInput').value.trim();
+      try {
+        const resp = await fetch(`/api/intraday/${code}?token=${encodeURIComponent(token)}`);
+        if (!resp.ok) throw new Error('API 回應 ' + resp.status);
+        d = await resp.json();
+        if (d.detail) throw new Error(d.detail);
+        intradayCache[code] = d;
+      } catch(e) {
+        if (el) el.innerHTML = `<div style="padding:40px;text-align:center;color:#c0392b;font-size:13px">⚠️ 盤中資料載入失敗：${e.message}</div>`;
+        return;
+      }
+    }
+    void document.getElementById('chartDrawer').offsetHeight;
+    await new Promise(res => requestAnimationFrame(res));
+    try { renderIntraday(d); } catch(e) {
+      if (el) el.innerHTML = `<div style="padding:40px;text-align:center;color:#c0392b;font-size:13px">⚠️ 圖表渲染失敗：${e.message}</div>`;
+    }
+    return;
+  }
+
+  // 日線圖表
   let d = chartCache[code];
   if (!d) {
     const token = document.getElementById('tokenInput').value.trim();
     try {
       const resp = await fetch(`/api/chart/${code}?token=${encodeURIComponent(token)}`);
+      if (!resp.ok) throw new Error('API 回應 ' + resp.status);
       d = await resp.json();
+      if (d.detail) throw new Error('API 錯誤：' + d.detail);
+      if (!d.dates || !d.dates.length) throw new Error('資料為空');
       chartCache[code] = d;
-    } catch(e) { return; }
+    } catch(e) {
+      if (el) el.innerHTML = `<div style="padding:40px;text-align:center;color:#c0392b;font-size:13px">⚠️ 資料載入失敗：${e.message}</div>`;
+      return;
+    }
   }
-  // 強制 reflow：讓瀏覽器完成佈局計算後再建圖
   void document.getElementById('chartDrawer').offsetHeight;
   await new Promise(res => requestAnimationFrame(res));
-  renderChart(tabId, d);
+  try { renderChart(tabId, d); } catch(e) {
+    if (el) el.innerHTML = `<div style="padding:40px;text-align:center;color:#c0392b;font-size:13px">⚠️ 圖表渲染失敗：${e.message}</div>`;
+  }
 }
 
 function getChartWidth() {
-  const body = document.getElementById('chartDrawer').querySelector('.drawer-body');
-  const w = body ? (body.clientWidth - 28) : (window.innerWidth - 28);
+  const w = document.getElementById('chartDrawer').clientWidth - 28;
   return w > 100 ? w : window.innerWidth - 28;
+}
+
+function makeChartOpts(w, h) {
+  return {
+    width: w, height: h,
+    layout: { background: { color: '#ffffff' }, textColor: '#666' },
+    grid: { vertLines: { color: '#f0f0ee' }, horzLines: { color: '#f0f0ee' } },
+    timeScale: { borderColor: '#e8e8e6', timeVisible: true, fixLeftEdge: true },
+    rightPriceScale: { borderColor: '#e8e8e6' },
+    handleScroll: true, handleScale: true,
+  };
 }
 
 function renderChart(tabId, d) {
   const LWC = LightweightCharts;
   const w = getChartWidth();
-  const opts = {
-    width: w,
-    height: 280,
-    layout: { background: { color: '#ffffff' }, textColor: '#666' },
-    grid: { vertLines: { color: '#f0f0ee' }, horzLines: { color: '#f0f0ee' } },
-    timeScale: { borderColor: '#e8e8e6', timeVisible: true, fixLeftEdge: true },
-    rightPriceScale: { borderColor: '#e8e8e6' },
-    handleScroll: true,
-    handleScale: true,
-  };
 
   if (tabId === 'candle') {
     const el = document.getElementById('candleEl');
     el.style.width = w + 'px';
-    const chart = LWC.createChart(el, opts);
+    const chart = LWC.createChart(el, makeChartOpts(w, 280));
     const candle = chart.addCandlestickSeries({
       upColor: '#e74c3c', downColor: '#2ecc71',
       borderUpColor: '#e74c3c', borderDownColor: '#2ecc71',
@@ -531,10 +619,10 @@ function renderChart(tabId, d) {
   } else if (tabId === 'vol') {
     const el = document.getElementById('volEl');
     el.style.width = w + 'px';
-    const chart = LWC.createChart(el, opts);
+    const chart = LWC.createChart(el, makeChartOpts(w, 280));
     const hist = chart.addHistogramSeries({ priceFormat: { type: 'volume' } });
     hist.setData(d.dates.map((dt, i) => ({
-      time: dt, value: d.vol[i],
+      time: dt, value: d.vol[i] || 0,
       color: d.close[i] >= (d.open[i] || d.close[i]) ? 'rgba(231,76,60,0.7)' : 'rgba(46,204,113,0.7)'
     })));
     chart.timeScale().fitContent();
@@ -543,7 +631,7 @@ function renderChart(tabId, d) {
   } else if (tabId === 'macd') {
     const el = document.getElementById('macdEl');
     el.style.width = w + 'px';
-    const chart = LWC.createChart(el, opts);
+    const chart = LWC.createChart(el, makeChartOpts(w, 280));
     const hist = chart.addHistogramSeries({ color: '#1a7a4a' });
     hist.setData(d.dates.map((dt, i) => d.macd[i] != null ? {
       time: dt, value: d.macd[i],
@@ -555,7 +643,7 @@ function renderChart(tabId, d) {
   } else if (tabId === 'rsi') {
     const el = document.getElementById('rsiEl');
     el.style.width = w + 'px';
-    const chart = LWC.createChart(el, opts);
+    const chart = LWC.createChart(el, makeChartOpts(w, 280));
     const line = chart.addLineSeries({ color: '#3b82f6', lineWidth: 1.5, priceLineVisible: false });
     line.setData(d.dates.map((dt, i) => d.rsi[i] != null ? { time: dt, value: d.rsi[i] } : null).filter(Boolean));
     [55, 75].forEach(v => {
@@ -564,7 +652,89 @@ function renderChart(tabId, d) {
     });
     chart.timeScale().fitContent();
     activeCharts.push(chart);
+
+  } else if (tabId === 'bb') {
+    const el = document.getElementById('bbEl');
+    el.style.width = w + 'px';
+    const chart = LWC.createChart(el, makeChartOpts(w, 280));
+    // K線
+    const candle = chart.addCandlestickSeries({
+      upColor: '#e74c3c', downColor: '#2ecc71',
+      borderUpColor: '#e74c3c', borderDownColor: '#2ecc71',
+      wickUpColor: '#e74c3c', wickDownColor: '#2ecc71',
+    });
+    candle.setData(d.dates.map((dt, i) => ({
+      time: dt, open: d.open[i] || d.close[i],
+      high: d.high[i] || d.close[i], low: d.low[i] || d.close[i], close: d.close[i]
+    })));
+    // 布林三條線
+    if (d.bb_upper) {
+      const upper = chart.addLineSeries({ color: 'rgba(231,76,60,0.8)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: '上軌' });
+      upper.setData(d.dates.map((dt, i) => d.bb_upper[i] != null ? { time: dt, value: d.bb_upper[i] } : null).filter(Boolean));
+      const mid = chart.addLineSeries({ color: 'rgba(100,100,100,0.6)', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, title: 'MA20' });
+      mid.setData(d.dates.map((dt, i) => d.bb_mid[i] != null ? { time: dt, value: d.bb_mid[i] } : null).filter(Boolean));
+      const lower = chart.addLineSeries({ color: 'rgba(52,152,219,0.8)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: '下軌' });
+      lower.setData(d.dates.map((dt, i) => d.bb_lower[i] != null ? { time: dt, value: d.bb_lower[i] } : null).filter(Boolean));
+    }
+    chart.timeScale().fitContent();
+    activeCharts.push(chart);
   }
+}
+
+function renderIntraday(d) {
+  const LWC = LightweightCharts;
+  const w = getChartWidth();
+
+  // 更新日期標籤
+  const dateEl = document.getElementById('intradayDate');
+  if (dateEl) dateEl.textContent = d.date + ' 盤中走勢（分鐘線）' + (d.msg ? '　⚠️ ' + d.msg : '');
+
+  if (!d.times || !d.times.length) return;
+
+  // 使用索引作為 x 軸（避免 LightweightCharts 對時間格式的要求）
+  const mkTime = i => ({ day: 1, month: 1, year: 2000 + i });
+
+  // 用數值索引轉成假日期（只是要讓圖表顯示，標籤用 formatter 改寫）
+  const priceEl = document.getElementById('intradayPriceEl');
+  priceEl.style.width = w + 'px';
+
+  const priceOpts = {
+    ...makeChartOpts(w, 200),
+    timeScale: {
+      borderColor: '#e8e8e6',
+      tickMarkFormatter: (time) => {
+        const idx = time.year - 2000;
+        return d.times[idx] || '';
+      }
+    }
+  };
+  const pChart = LWC.createChart(priceEl, priceOpts);
+
+  // 分鐘收盤線
+  const priceLine = pChart.addLineSeries({ color: '#3b82f6', lineWidth: 1.5, priceLineVisible: false });
+  priceLine.setData(d.close.map((v, i) => v != null ? { time: mkTime(i), value: v } : null).filter(Boolean));
+
+  // VWAP
+  if (d.vwap) {
+    const vwapLine = pChart.addLineSeries({ color: '#f39c12', lineWidth: 1.5, lineStyle: 1, priceLineVisible: false, lastValueVisible: false });
+    vwapLine.setData(d.vwap.map((v, i) => v != null ? { time: mkTime(i), value: v } : null).filter(Boolean));
+  }
+  pChart.timeScale().fitContent();
+  activeCharts.push(pChart);
+
+  // 成交量
+  const volEl = document.getElementById('intradayVolEl');
+  volEl.style.width = w + 'px';
+  const vOpts = { ...makeChartOpts(w, 100), timeScale: { visible: false } };
+  const vChart = LWC.createChart(volEl, vOpts);
+  const volHist = vChart.addHistogramSeries({ priceFormat: { type: 'volume' } });
+  const avgVol = d.vol.filter(v => v).reduce((a, b) => a + b, 0) / (d.vol.filter(v => v).length || 1);
+  volHist.setData(d.vol.map((v, i) => v != null ? {
+    time: mkTime(i), value: v,
+    color: v >= avgVol ? 'rgba(231,76,60,0.7)' : 'rgba(46,204,113,0.5)'
+  } : null).filter(Boolean));
+  vChart.timeScale().fitContent();
+  activeCharts.push(vChart);
 }
 
 function buildIndGrid(r) {
@@ -574,7 +744,8 @@ function buildIndGrid(r) {
     { name: 'RSI (14)', val: r.rsi.toFixed(1), desc: r.rsi_strong ? '✅ 強勢區間 55–75' : r.rsi < 55 ? '偏弱' : '過熱注意', active: r.rsi_strong },
     { name: 'MACD 柱狀', val: (r.macd_hist > 0 ? '+' : '') + r.macd_hist.toFixed(4), desc: r.macd_positive ? '✅ 正值（多頭動能）' : '負值（空頭動能）', active: r.macd_positive },
     { name: '量能比', val: r.vol_ratio.toFixed(2) + 'x', desc: r.volume_surge ? '✅ 放量（>1.5x）' : '量能正常', active: r.volume_surge },
-    { name: '價格位置', val: r.price.toFixed(2), desc: r.price_breakout ? '✅ 接近/突破20日高點' : '尚未突破20日高點', active: r.price_breakout },
+    { name: '價格突破', val: r.price.toFixed(2), desc: r.price_breakout ? '✅ 接近/突破20日高點' : '尚未突破20日高點', active: r.price_breakout },
+    { name: '布林通道', val: '見布林頁籤', desc: '上軌偏貴・下軌偏便宜・通道收窄=變盤', active: false },
   ];
   document.getElementById('indGrid').innerHTML = items.map(item => `
     <div class="ind-card ${item.active ? 'active' : ''}">
