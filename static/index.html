@@ -434,6 +434,8 @@ async function openDrawer(code, name) {
   document.body.style.overflow = 'hidden';
 
   destroyCharts();
+  // 等抽屜 CSS transition (0.3s) 結束後容器才有正確寬度
+  await new Promise(res => setTimeout(res, 350));
   await loadAndRender(code, currentDTab);
   if (r) buildIndGrid(r);
 }
@@ -486,6 +488,7 @@ async function loadAndRender(code, tabId) {
 function renderChart(tabId, d) {
   const LWC = LightweightCharts;
   const opts = {
+    autoSize: true,
     layout: { background: { color: '#ffffff' }, textColor: '#666' },
     grid: { vertLines: { color: '#f0f0ee' }, horzLines: { color: '#f0f0ee' } },
     timeScale: { borderColor: '#e8e8e6', timeVisible: true, fixLeftEdge: true },
@@ -496,7 +499,7 @@ function renderChart(tabId, d) {
 
   if (tabId === 'candle') {
     const el = document.getElementById('candleEl');
-    const chart = LWC.createChart(el, { ...opts, height: 280, width: el.offsetWidth });
+    const chart = LWC.createChart(el, { ...opts, height: 280 });
     const candle = chart.addCandlestickSeries({
       upColor: '#e74c3c', downColor: '#2ecc71',
       borderUpColor: '#e74c3c', borderDownColor: '#2ecc71',
@@ -515,7 +518,7 @@ function renderChart(tabId, d) {
 
   } else if (tabId === 'vol') {
     const el = document.getElementById('volEl');
-    const chart = LWC.createChart(el, { ...opts, height: 280, width: el.offsetWidth });
+    const chart = LWC.createChart(el, { ...opts, height: 280 });
     const hist = chart.addHistogramSeries({ priceFormat: { type: 'volume' } });
     hist.setData(d.dates.map((dt, i) => ({
       time: dt, value: d.vol[i],
@@ -526,7 +529,7 @@ function renderChart(tabId, d) {
 
   } else if (tabId === 'macd') {
     const el = document.getElementById('macdEl');
-    const chart = LWC.createChart(el, { ...opts, height: 280, width: el.offsetWidth });
+    const chart = LWC.createChart(el, { ...opts, height: 280 });
     const hist = chart.addHistogramSeries({ color: '#1a7a4a' });
     hist.setData(d.dates.map((dt, i) => d.macd[i] != null ? {
       time: dt, value: d.macd[i],
@@ -537,7 +540,7 @@ function renderChart(tabId, d) {
 
   } else if (tabId === 'rsi') {
     const el = document.getElementById('rsiEl');
-    const chart = LWC.createChart(el, { ...opts, height: 280, width: el.offsetWidth });
+    const chart = LWC.createChart(el, { ...opts, height: 280 });
     const line = chart.addLineSeries({ color: '#3b82f6', lineWidth: 1.5, priceLineVisible: false });
     line.setData(d.dates.map((dt, i) => d.rsi[i] != null ? { time: dt, value: d.rsi[i] } : null).filter(Boolean));
     [55, 75].forEach(v => {
