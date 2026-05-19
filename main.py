@@ -180,6 +180,24 @@ def analyze(stock_id: str, df: pd.DataFrame, cfg: ScanRequest) -> dict:
     rsi              = calc_rsi(closes)
     hist_now, hist_prev = calc_macd(closes)
 
+    # 布林通道分析
+    bb_mid   = closes.rolling(20, min_periods=1).mean()
+    bb_std   = closes.rolling(20, min_periods=1).std().fillna(0)
+    bb_upper = bb_mid + 2 * bb_std
+    bb_lower = bb_mid - 2 * bb_std
+    bb_width = ((bb_upper - bb_lower) / bb_mid * 100)  # 通道寬度 %
+
+    bb_mid_now   = float(bb_mid.iloc[-1])
+    bb_upper_now = float(bb_upper.iloc[-1])
+    bb_lower_now = float(bb_lower.iloc[-1])
+    bb_width_now = float(bb_width.iloc[-1])
+    bb_width_avg = float(bb_width.tail(20).mean()) if len(bb_width) >= 5 else bb_width_now
+
+    # 價格在通道中的位置 0~100%（0=下軌, 100=上軌）
+    bb_range     = bb_upper_now - bb_lower_now
+    bb_position  = ((price - bb_lower_now) / bb_range * 100) if bb_range > 0 else 50
+    bb_expanding = bb_width_now > bb_width_avg  # 通道是否擴張
+
     signals = {
         'price_breakout':    price >= max20 * cfg.price_breakout_pct,
         'volume_surge':      vol_ratio >= cfg.vol_ratio_threshold,
@@ -207,6 +225,12 @@ def analyze(stock_id: str, df: pd.DataFrame, cfg: ScanRequest) -> dict:
         'score': score,
         'score_pct': safe_float(score_pct, 1),
         'strength': strength,
+        'bb_upper': safe_float(bb_upper_now, 2),
+        'bb_mid':   safe_float(bb_mid_now, 2),
+        'bb_lower': safe_float(bb_lower_now, 2),
+        'bb_position': safe_float(bb_position, 1),
+        'bb_width':    safe_float(bb_width_now, 1),
+        'bb_expanding': bb_expanding,
         **{k: signals[k] for k in signals},
         '_df': df,
     }
