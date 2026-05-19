@@ -482,13 +482,24 @@ async function loadAndRender(code, tabId) {
       chartCache[code] = d;
     } catch(e) { return; }
   }
+  // 強制 reflow：讓瀏覽器完成佈局計算後再建圖
+  void document.getElementById('chartDrawer').offsetHeight;
+  await new Promise(res => requestAnimationFrame(res));
   renderChart(tabId, d);
+}
+
+function getChartWidth() {
+  const body = document.getElementById('chartDrawer').querySelector('.drawer-body');
+  const w = body ? (body.clientWidth - 28) : (window.innerWidth - 28);
+  return w > 100 ? w : window.innerWidth - 28;
 }
 
 function renderChart(tabId, d) {
   const LWC = LightweightCharts;
+  const w = getChartWidth();
   const opts = {
-    autoSize: true,
+    width: w,
+    height: 280,
     layout: { background: { color: '#ffffff' }, textColor: '#666' },
     grid: { vertLines: { color: '#f0f0ee' }, horzLines: { color: '#f0f0ee' } },
     timeScale: { borderColor: '#e8e8e6', timeVisible: true, fixLeftEdge: true },
@@ -499,7 +510,8 @@ function renderChart(tabId, d) {
 
   if (tabId === 'candle') {
     const el = document.getElementById('candleEl');
-    const chart = LWC.createChart(el, { ...opts, height: 280 });
+    el.style.width = w + 'px';
+    const chart = LWC.createChart(el, opts);
     const candle = chart.addCandlestickSeries({
       upColor: '#e74c3c', downColor: '#2ecc71',
       borderUpColor: '#e74c3c', borderDownColor: '#2ecc71',
@@ -518,7 +530,8 @@ function renderChart(tabId, d) {
 
   } else if (tabId === 'vol') {
     const el = document.getElementById('volEl');
-    const chart = LWC.createChart(el, { ...opts, height: 280 });
+    el.style.width = w + 'px';
+    const chart = LWC.createChart(el, opts);
     const hist = chart.addHistogramSeries({ priceFormat: { type: 'volume' } });
     hist.setData(d.dates.map((dt, i) => ({
       time: dt, value: d.vol[i],
@@ -529,7 +542,8 @@ function renderChart(tabId, d) {
 
   } else if (tabId === 'macd') {
     const el = document.getElementById('macdEl');
-    const chart = LWC.createChart(el, { ...opts, height: 280 });
+    el.style.width = w + 'px';
+    const chart = LWC.createChart(el, opts);
     const hist = chart.addHistogramSeries({ color: '#1a7a4a' });
     hist.setData(d.dates.map((dt, i) => d.macd[i] != null ? {
       time: dt, value: d.macd[i],
@@ -540,7 +554,8 @@ function renderChart(tabId, d) {
 
   } else if (tabId === 'rsi') {
     const el = document.getElementById('rsiEl');
-    const chart = LWC.createChart(el, { ...opts, height: 280 });
+    el.style.width = w + 'px';
+    const chart = LWC.createChart(el, opts);
     const line = chart.addLineSeries({ color: '#3b82f6', lineWidth: 1.5, priceLineVisible: false });
     line.setData(d.dates.map((dt, i) => d.rsi[i] != null ? { time: dt, value: d.rsi[i] } : null).filter(Boolean));
     [55, 75].forEach(v => {
