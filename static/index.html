@@ -134,6 +134,23 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .ind-name { font-size: 11px; color: var(--text-3); margin-bottom: 3px; }
 .ind-val { font-size: 15px; font-weight: 600; }
 .ind-desc { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+
+/* 布林通道全寬卡片 */
+.ind-card-bb { grid-column: 1 / -1; border-radius: var(--radius-sm); padding: 12px 14px; border: 1.5px solid; }
+.bb-bull     { background: #f0faf4; border-color: #1a7a4a; color: #1a4a2a; }
+.bb-danger   { background: #fde8e8; border-color: #c0392b; color: #7a1a1a; }
+.bb-neutral  { background: #f5f5f3; border-color: #aaa;    color: #333; }
+.bb-bear     { background: #fff8f0; border-color: #e67e22; color: #7a3a00; }
+.bb-oversold { background: #eef4ff; border-color: #3498db; color: #1a3a6a; }
+.ind-card-bb .ind-name { color: inherit; opacity: 0.7; }
+.ind-card-bb .ind-val  { font-size: 14px; }
+.ind-card-bb .ind-desc { color: inherit; opacity: 0.85; line-height: 1.5; }
+
+/* 布林位置進度條 */
+.bb-bar-wrap  { margin: 8px 0 4px; }
+.bb-bar-track { position: relative; height: 6px; background: linear-gradient(to right, #3498db, #f5f5f3 50%, #e74c3c); border-radius: 3px; }
+.bb-bar-fill  { position: absolute; top: 50%; transform: translate(-50%, -50%); width: 12px; height: 12px; border-radius: 50%; background: #1a1a1a; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.bb-bar-labels{ display: flex; justify-content: space-between; font-size: 10px; color: var(--text-4); margin-top: 3px; }
 .sig-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .sig-tag { padding: 3px 9px; border-radius: 8px; font-size: 11px; font-weight: 600; background: var(--green-light); color: var(--green); }
 
@@ -738,21 +755,79 @@ function renderIntraday(d) {
 }
 
 function buildIndGrid(r) {
+  // 布林通道解讀
+  const pos = r.bb_position ?? 50;
+  const expanding = r.bb_expanding ?? false;
+  const bbUpper = r.bb_upper ?? 0;
+  const bbMid   = r.bb_mid   ?? 0;
+  const bbLower = r.bb_lower ?? 0;
+
+  let bbStatus = '', bbDesc = '', bbColor = '';
+  if (pos >= 90) {
+    bbStatus = '⚠️ 觸及上軌，偏貴';
+    bbDesc   = `股價 ${r.price.toFixed(2)} 已貼近上軌 ${bbUpper.toFixed(2)}，短線可能面臨壓力，注意回調風險`;
+    bbColor  = 'bb-danger';
+  } else if (pos >= 70) {
+    bbStatus = '📈 偏上軌，多頭強勢';
+    bbDesc   = `股價在中軌上方偏高位置，多頭動能強，但需注意若跌破中軌 ${bbMid.toFixed(2)} 則動能減弱`;
+    bbColor  = 'bb-bull';
+  } else if (pos >= 45) {
+    bbStatus = '➡️ 中軌附近，方向待確認';
+    bbDesc   = `股價在中軌 ${bbMid.toFixed(2)} 附近盤整，尚未明確選擇方向，觀察突破哪一側`;
+    bbColor  = 'bb-neutral';
+  } else if (pos >= 15) {
+    bbStatus = '📉 偏下軌，偏弱';
+    bbDesc   = `股價在中軌下方偏低位置，空頭動能較強，若能守住下軌 ${bbLower.toFixed(2)} 可觀察反彈`;
+    bbColor  = 'bb-bear';
+  } else {
+    bbStatus = '🔵 觸及下軌，超賣';
+    bbDesc   = `股價 ${r.price.toFixed(2)} 已貼近下軌 ${bbLower.toFixed(2)}，可能超賣，留意是否出現反彈訊號`;
+    bbColor  = 'bb-oversold';
+  }
+
+  const bandDesc = expanding
+    ? '通道擴張中，波動加大，趨勢明確'
+    : '通道收窄中，即將變盤，留意方向突破';
+
   const items = [
-    { name: '收盤價', val: r.price.toFixed(2) + ' 元', desc: `漲跌 ${r.change_pct >= 0 ? '+' : ''}${r.change_pct.toFixed(2)}%`, active: false },
-    { name: '均線排列 MA5/10/20', val: `${r.ma5} / ${r.ma10} / ${r.ma20}`, desc: r.ma_bullish ? '✅ 多頭排列' : '⬜ 非多頭排列', active: r.ma_bullish },
-    { name: 'RSI (14)', val: r.rsi.toFixed(1), desc: r.rsi_strong ? '✅ 強勢區間 55–75' : r.rsi < 55 ? '偏弱' : '過熱注意', active: r.rsi_strong },
-    { name: 'MACD 柱狀', val: (r.macd_hist > 0 ? '+' : '') + r.macd_hist.toFixed(4), desc: r.macd_positive ? '✅ 正值（多頭動能）' : '負值（空頭動能）', active: r.macd_positive },
-    { name: '量能比', val: r.vol_ratio.toFixed(2) + 'x', desc: r.volume_surge ? '✅ 放量（>1.5x）' : '量能正常', active: r.volume_surge },
-    { name: '價格突破', val: r.price.toFixed(2), desc: r.price_breakout ? '✅ 接近/突破20日高點' : '尚未突破20日高點', active: r.price_breakout },
-    { name: '布林通道', val: '見布林頁籤', desc: '上軌偏貴・下軌偏便宜・通道收窄=變盤', active: false },
+    { name: '收盤價', val: r.price.toFixed(2) + ' 元', desc: `漲跌 ${r.change_pct >= 0 ? '+' : ''}${r.change_pct.toFixed(2)}%`, active: false, color: '' },
+    { name: '均線排列 MA5/10/20', val: `${r.ma5} / ${r.ma10} / ${r.ma20}`, desc: r.ma_bullish ? '✅ 多頭排列：短中長均線依序向上' : '⬜ 均線尚未完整多頭排列', active: r.ma_bullish, color: '' },
+    { name: 'RSI (14)', val: r.rsi.toFixed(1), desc: r.rsi_strong ? '✅ 強勢區間 55–75，動能足夠且未過熱' : r.rsi < 55 ? '動能偏弱，尚未啟動' : '⚠️ RSI > 75，短線過熱注意', active: r.rsi_strong, color: '' },
+    { name: 'MACD 柱狀', val: (r.macd_hist > 0 ? '+' : '') + r.macd_hist.toFixed(4), desc: r.macd_positive ? (r.macd_golden_cross ? '✅ 剛發生金叉，多頭動能轉強' : '✅ 柱狀正值，多頭動能持續') : '柱狀負值，空頭動能，等待金叉', active: r.macd_positive, color: '' },
+    { name: '量能比', val: r.vol_ratio.toFixed(2) + 'x', desc: r.volume_surge ? `✅ 今日量為均量 ${r.vol_ratio.toFixed(1)} 倍，明顯放量` : '量能正常，無異常放量', active: r.volume_surge, color: '' },
+    { name: '價格突破', val: r.price.toFixed(2), desc: r.price_breakout ? '✅ 接近或突破近20日高點，有效突破訊號' : `尚未突破20日高點，仍在整理`, active: r.price_breakout, color: '' },
   ];
-  document.getElementById('indGrid').innerHTML = items.map(item => `
+
+  const regularCards = items.map(item => `
     <div class="ind-card ${item.active ? 'active' : ''}">
       <div class="ind-name">${item.name}</div>
       <div class="ind-val">${item.val}</div>
       <div class="ind-desc">${item.desc}</div>
     </div>`).join('');
+
+  // 布林通道：獨立全寬卡片
+  const bbCard = `
+    <div class="ind-card-bb ${bbColor}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+        <div>
+          <div class="ind-name">布林通道 (20日, 2σ)</div>
+          <div class="ind-val">${bbStatus}</div>
+        </div>
+        <div style="text-align:right;font-size:11px;color:inherit;opacity:0.75">
+          上軌 ${bbUpper.toFixed(2)}<br>中軌 ${bbMid.toFixed(2)}<br>下軌 ${bbLower.toFixed(2)}
+        </div>
+      </div>
+      <div class="bb-bar-wrap">
+        <div class="bb-bar-track">
+          <div class="bb-bar-fill" style="left:${Math.max(0,Math.min(100,pos)).toFixed(1)}%"></div>
+        </div>
+        <div class="bb-bar-labels"><span>下軌</span><span>中軌</span><span>上軌</span></div>
+      </div>
+      <div class="ind-desc" style="margin-top:8px">${bbDesc}</div>
+      <div class="ind-desc" style="margin-top:4px;opacity:0.85">📊 ${bandDesc}</div>
+    </div>`;
+
+  document.getElementById('indGrid').innerHTML = regularCards + bbCard;
 }
 
 // ── 工具 ──────────────────────────────────────────────
