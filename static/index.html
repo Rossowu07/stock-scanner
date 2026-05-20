@@ -220,10 +220,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   <div class="card-title">API Token</div>
   <div class="token-wrap">
     <input type="password" id="tokenInput" placeholder="貼上 FinMind Token" autocomplete="off">
+    <button class="btn-sm" onclick="toggleTokenVisible()" id="tokenToggle" title="顯示/隱藏">👁</button>
     <button class="btn-sm" onclick="verifyToken()">驗證</button>
   </div>
   <div id="tokenStatus" class="token-status"></div>
-  <div class="privacy">🔒 Token 僅存於瀏覽器記憶體，不會傳至任何第三方</div>
+  <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-3);cursor:pointer">
+      <input type="checkbox" id="rememberToken" style="width:14px;height:14px;cursor:pointer">
+      記住 Token（儲存於此裝置）
+    </label>
+    <button id="clearTokenBtn" onclick="clearSavedToken()" style="display:none;padding:2px 8px;font-size:11px;border:0.5px solid var(--border-secondary);border-radius:4px;background:transparent;color:var(--text-3);cursor:pointer">清除</button>
+  </div>
+  <div class="privacy">🔒 Token 僅存於你的瀏覽器本機，不會上傳至任何伺服器</div>
 </div>
 
 <!-- 掃描設定 -->
@@ -359,26 +367,64 @@ let chartCache = {};
 let intradayCache = {};
 
 // ── Token ─────────────────────────────────────────────
-async function verifyToken() {
-  const t = document.getElementById('tokenInput').value.trim();
-  if (!t) { showAlert('請先輸入 Token', 'warn'); return; }
+const TOKEN_KEY = 'finmind_token_v1';
+
+function initToken() {
+  const saved = localStorage.getItem(TOKEN_KEY);
+  if (saved) {
+    document.getElementById('tokenInput').value = saved;
+    document.getElementById('rememberToken').checked = true;
+    document.getElementById('clearTokenBtn').style.display = 'inline-block';
+    // 自動驗證已儲存的 Token
+    verifyToken(true);
+  }
+}
+
+function toggleTokenVisible() {
+  const inp = document.getElementById('tokenInput');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+function clearSavedToken() {
+  localStorage.removeItem(TOKEN_KEY);
+  document.getElementById('tokenInput').value = '';
+  document.getElementById('rememberToken').checked = false;
+  document.getElementById('clearTokenBtn').style.display = 'none';
   const st = document.getElementById('tokenStatus');
-  st.className = 'token-status'; st.textContent = '驗證中...'; st.style.display = 'block';
+  st.className = 'token-status'; st.style.display = 'none';
+}
+
+async function verifyToken(silent = false) {
+  const t = document.getElementById('tokenInput').value.trim();
+  if (!t) { if (!silent) showAlert('請先輸入 Token', 'warn'); return; }
+  const st = document.getElementById('tokenStatus');
+  if (!silent) { st.className = 'token-status'; st.textContent = '驗證中...'; st.style.display = 'block'; }
   try {
     const r = await fetch(`/api/verify?token=${encodeURIComponent(t)}`);
     const d = await r.json();
     if (d.ok) {
       st.className = 'token-status ok';
       st.textContent = '✅ Token 驗證成功，可以開始掃描';
+      st.style.display = 'block';
+      // 若勾選「記住」則存入 localStorage
+      if (document.getElementById('rememberToken').checked) {
+        localStorage.setItem(TOKEN_KEY, t);
+        document.getElementById('clearTokenBtn').style.display = 'inline-block';
+      }
     } else {
       st.className = 'token-status err';
       st.textContent = '❌ ' + (d.msg || 'Token 無效');
+      st.style.display = 'block';
     }
   } catch(e) {
     st.className = 'token-status err';
     st.textContent = '連線失敗：' + e.message;
+    st.style.display = 'block';
   }
 }
+
+// 頁面載入時自動讀取已儲存的 Token
+window.addEventListener('DOMContentLoaded', initToken);
 
 // ── 模式切換 ──────────────────────────────────────────
 function setMode(m, btn) {
