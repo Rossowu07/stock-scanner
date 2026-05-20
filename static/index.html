@@ -135,7 +135,35 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .ind-val { font-size: 15px; font-weight: 600; }
 .ind-desc { font-size: 11px; color: var(--text-3); margin-top: 2px; }
 
-/* 布林通道全寬卡片 */
+/* 籌碼面卡片 */
+.chip-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-top: 12px; }
+.chip-card { border:1px solid var(--border-light); border-radius:var(--radius-sm); padding:10px 12px; }
+.chip-card.positive { border-color:var(--green); background:var(--green-light); }
+.chip-card.negative { border-color:#e67e22; background:#fff8f0; }
+.chip-val-up   { font-size:14px; font-weight:600; color:var(--green); }
+.chip-val-dn   { font-size:14px; font-weight:600; color:#c0392b; }
+.chip-val-zero { font-size:14px; font-weight:600; color:#888; }
+
+/* 操作建議卡片 */
+.strategy-header { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; margin-bottom:12px; }
+.strategy-score  { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+.score-pill { padding:4px 12px; border-radius:20px; font-size:12px; font-weight:600; }
+.score-pill.tech  { background:#e8f4fd; color:#1a6a9a; }
+.score-pill.chip  { background:var(--green-light); color:var(--green); }
+.score-pill.total { background:var(--text); color:#fff; }
+.strategy-card { border-radius:var(--radius); padding:14px 16px; margin-bottom:10px; border:1.5px solid; }
+.strategy-card.short { background:#fff8f0; border-color:#e67e22; }
+.strategy-card.mid   { background:#f0faf4; border-color:var(--green); }
+.strategy-card.long  { background:#eef4ff; border-color:#3498db; }
+.strategy-card.risk  { background:#fafaf8; border-color:var(--border); }
+.strat-label { font-size:11px; font-weight:600; letter-spacing:.05em; opacity:.7; margin-bottom:4px; }
+.strat-action { font-size:16px; font-weight:700; margin-bottom:6px; }
+.strat-note   { font-size:13px; line-height:1.6; margin-bottom:8px; }
+.strat-list   { padding-left:0; list-style:none; display:flex; flex-direction:column; gap:4px; }
+.strat-list li { font-size:12px; color:var(--text-2); padding-left:14px; position:relative; line-height:1.5; }
+.strat-list li::before { content:'·'; position:absolute; left:4px; }
+.strat-list li.risk-item { color:#c0392b; }
+.risk-warn { font-size:12px; color:var(--text-3); line-height:1.6; }
 .ind-card-bb { grid-column: 1 / -1; border-radius: var(--radius-sm); padding: 12px 14px; border: 1.5px solid; }
 .bb-bull     { background: #f0faf4; border-color: #1a7a4a; color: #1a4a2a; }
 .bb-danger   { background: #fde8e8; border-color: #c0392b; color: #7a1a1a; }
@@ -237,6 +265,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div class="dtab" onclick="switchDTab('bb',this)">布林通道</div>
     <div class="dtab" onclick="switchDTab('intraday',this)">盤中走勢</div>
     <div class="dtab" onclick="switchDTab('info',this)">指標摘要</div>
+    <div class="dtab" onclick="switchDTab('strategy',this)">📋 操作建議</div>
   </div>
   <div class="drawer-body">
     <div id="dCandle">
@@ -286,6 +315,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     </div>
     <div id="dInfo" style="display:none">
       <div class="ind-grid" id="indGrid"></div>
+    </div>
+    <div id="dStrategy" style="display:none">
+      <div id="strategyContent"><div style="padding:40px;text-align:center;color:#888;font-size:13px">點擊「產生操作建議」開始分析</div></div>
+      <button class="scan-btn" id="strategyBtn" onclick="loadStrategy()" style="margin-top:12px">📋 產生操作建議</button>
     </div>
   </div>
 </div>
@@ -503,7 +536,7 @@ function closeDrawer() {
 
 async function switchDTab(tabId, btn) {
   currentDTab = tabId;
-  const allTabs = ['candle','vol','macd','rsi','bb','intraday','info'];
+  const allTabs = ['candle','vol','macd','rsi','bb','intraday','info','strategy'];
   allTabs.forEach(t => {
     const el = document.getElementById('d' + t.charAt(0).toUpperCase() + t.slice(1));
     if (el) el.style.display = t === tabId ? 'block' : 'none';
@@ -827,7 +860,103 @@ function buildIndGrid(r) {
       <div class="ind-desc" style="margin-top:4px;opacity:0.85">📊 ${bandDesc}</div>
     </div>`;
 
-  document.getElementById('indGrid').innerHTML = regularCards + bbCard;
+  // 籌碼面區塊
+  let chipSection = '';
+  if (r.chip_available) {
+    const fCls  = r.foreign_5d > 0 ? 'positive' : r.foreign_5d < 0 ? 'negative' : '';
+    const tCls  = r.trust_5d   > 0 ? 'positive' : r.trust_5d   < 0 ? 'negative' : '';
+    const mCls  = r.margin_safe ? 'positive' : 'negative';
+    const fValCls  = r.foreign_5d  > 0 ? 'chip-val-up' : r.foreign_5d  < 0 ? 'chip-val-dn' : 'chip-val-zero';
+    const tValCls  = r.trust_5d    > 0 ? 'chip-val-up' : r.trust_5d    < 0 ? 'chip-val-dn' : 'chip-val-zero';
+    const mValCls  = r.margin_change_5d <= 0 ? 'chip-val-up' : 'chip-val-dn';
+    const fmt = v => v > 0 ? `+${v.toLocaleString()}` : v.toLocaleString();
+    chipSection = `
+      <div style="margin-top:16px">
+        <div class="ind-name" style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:8px">📊 籌碼面（近5日）</div>
+        <div class="chip-grid">
+          <div class="chip-card ${fCls}">
+            <div class="ind-name">外資買賣超</div>
+            <div class="${fValCls}">${fmt(r.foreign_5d)} 張</div>
+            <div class="ind-desc">今日 ${fmt(r.foreign_today)}・20日 ${fmt(r.foreign_20d)}</div>
+          </div>
+          <div class="chip-card ${tCls}">
+            <div class="ind-name">投信買賣超</div>
+            <div class="${tValCls}">${fmt(r.trust_5d)} 張</div>
+            <div class="ind-desc">今日 ${fmt(r.trust_today)}・合計 ${fmt(r.inst_total_5d)}</div>
+          </div>
+          <div class="chip-card ${mCls}">
+            <div class="ind-name">融資餘額變化</div>
+            <div class="${mValCls}">${fmt(r.margin_change_5d)} 張</div>
+            <div class="ind-desc">餘額 ${r.margin_balance.toLocaleString()}・${r.margin_safe ? '籌碼健康' : '融資增加'}</div>
+          </div>
+        </div>
+      </div>`;
+  } else {
+    chipSection = `<div style="margin-top:12px;padding:10px;background:var(--bg);border-radius:var(--radius-sm);font-size:12px;color:var(--text-3)">⚠️ 籌碼面資料未能取得（可能為非交易日或 API 限制）</div>`;
+  }
+
+  document.getElementById('indGrid').innerHTML = regularCards + bbCard + chipSection;
+}
+
+async function loadStrategy() {
+  const r = allResults.find(x => x.code === currentStock);
+  if (!r) return;
+  const btn = document.getElementById('strategyBtn');
+  btn.disabled = true;
+  btn.textContent = '分析中...';
+  const content = document.getElementById('strategyContent');
+  content.innerHTML = '<div style="padding:30px;text-align:center;color:#888;font-size:13px">正在綜合技術面與籌碼面資料...</div>';
+  try {
+    const resp = await fetch('/api/strategy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stock: r })
+    });
+    if (!resp.ok) throw new Error('API 錯誤 ' + resp.status);
+    const d = await resp.json();
+    renderStrategy(d);
+  } catch(e) {
+    content.innerHTML = `<div style="padding:20px;color:#c0392b;font-size:13px">⚠️ 無法產生建議：${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 重新產生';
+  }
+}
+
+function renderStrategy(d) {
+  const actionColor = {
+    '積極':'#1a7a4a','積極佈局':'#1a7a4a','長線買進':'#1a7a4a',
+    '中性偏多':'#2980b9','逢低布局':'#2980b9','分批建倉':'#2980b9',
+    '謹慎':'#e67e22','減碼觀察':'#e67e22','等待時機':'#e67e22',
+    '觀望':'#888','中性觀察':'#888','持續觀察':'#888',
+  };
+  const getColor = a => actionColor[a] || '#888';
+
+  const renderSection = (label, emoji, cls, s) => `
+    <div class="strategy-card ${cls}">
+      <div class="strat-label">${emoji} ${label}</div>
+      <div class="strat-action" style="color:${getColor(s.action)}">${s.action}</div>
+      <div class="strat-note">${s.note}</div>
+      ${s.signals.length ? `<ul class="strat-list">${s.signals.map(x=>`<li>${x}</li>`).join('')}</ul>` : ''}
+      ${s.risks.length ? `<ul class="strat-list" style="margin-top:6px">${s.risks.map(x=>`<li class="risk-item">⚠️ ${x}</li>`).join('')}</ul>` : ''}
+    </div>`;
+
+  document.getElementById('strategyContent').innerHTML = `
+    <div class="strategy-header">
+      <div style="font-size:15px;font-weight:600">${d.code} ${d.name} &nbsp;<span style="font-size:13px;color:var(--text-3);font-weight:400">@ ${d.price}</span></div>
+      <div class="strategy-score">
+        <span class="score-pill tech">技術面 ${d.tech_score}/5</span>
+        <span class="score-pill chip">籌碼面 ${d.chip_score}/3</span>
+        <span class="score-pill total">綜合 ${d.total_score}/8</span>
+      </div>
+    </div>
+    ${renderSection('短線操作（1–5日）','⚡','short', d.short)}
+    ${renderSection('中線操作（1–3個月）','📈','mid', d.mid)}
+    ${renderSection('長線操作（3個月以上）','🏦','long', d.long)}
+    <div class="strategy-card risk">
+      <div class="strat-label">⚠️ 風險提示</div>
+      <div class="risk-warn">${d.risk_warnings.join('<br>')}</div>
+    </div>`;
 }
 
 // ── 工具 ──────────────────────────────────────────────
