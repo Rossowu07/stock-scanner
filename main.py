@@ -707,88 +707,97 @@ async def get_chart(code: str, token: str):
 
 @app.get("/api/intraday/{code}")
 async def get_intraday(code: str, token: str):
-    """抓取當日盤中分鐘資料（FinMind TaiwanStockPriceTick 或 TaiwanStockPriceMinute）"""
+    """
+    盤中/當日走勢：使用 Yahoo Finance 1分鐘線（免費，近5日可用）
+    收盤後即可取得當日完整分鐘資料。
+    """
     import traceback
     try:
-        today = datetime.today().strftime('%Y-%m-%d')
-        # 先試分鐘線
-        resp = requests.get(
-            'https://api.finmindtrade.com/api/v4/data',
-            params={
-                'dataset': 'TaiwanStockPriceMinute',
-                'data_id': code,
-                'start_date': today,
-                'end_date': today,
-                'token': token,
-            },
-            timeout=15
+        ticker = f"{code}.TW"
+        # Yahoo Finance：interval=1m 最多取近7天，period=5d 取近5個交易日
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+            f"?interval=1m&range=1d&includePrePost=false"
         )
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
         data = resp.json()
-        rows = data.get('data', [])
 
-        # 非交易日或盤前：退回前一個交易日
-        if not rows:
-            yesterday = (datetime.today() - timedelta(days=1)).strftime('%Y-%m-%d')
-            resp2 = requests.get(
-                'https://api.finmindtrade.com/api/v4/data',
-                params={
-                    'dataset': 'TaiwanStockPriceMinute',
-                    'data_id': code,
-                    'start_date': yesterday,
-                    'end_date': yesterday,
-                    'token': token,
-                },
-                timeout=15
+        result = data.get("chart", {}).get("result", [])
+        if not result:
+            raise ValueError("Yahoo Finance 無資料回應")
+
+        r      = result[0]
+        meta   = r.get("meta", {})
+        ts     = r.get("timestamp", [])
+        quotes = r.get("indicators", {}).get("quote", [{}])[0]
+
+        if not ts:
+            raise ValueError("今日尚無分鐘資料（可能尚未開盤或非交易日）")
+
+        from datetime import timezone, timedelta as td
+        tz_offset = td(hours=8)  # 台灣 UTC+8
+
+        times  = []
+        opens, highs, lows, closes, vols = [], [], [], [], []
+
+        raw_close = quotes.get("close", [])
+        raw_open  = quotes.get("open",  [])
+        raw_high  = quotes.get("high",  [])
+        raw_low   = quotes.get("low",   [])
+        raw_vol   = quotes.get("volume",[])
+
+        for i, t in enumerate(ts):
+            c = raw_close[i] if i < len(raw_close) else None
+            if c is None:
+                continue
+            dt_local = datetime.fromtimestamp(t, tz=timezone.utc).astimezone(
+                timezone(tz_offset)
             )
-            data2 = resp2.json()
-            rows = data2.get('data', [])
-            date_label = yesterday
-        else:
-            date_label = today
+            times.append(dt_local.strftime("%H:%M"))
+            opens.append(round(float(raw_open[i]),  2) if i < len(raw_open)  and raw_open[i]  else round(float(c), 2))
+            highs.append(round(float(raw_high[i]),  2) if i < len(raw_high)  and raw_high[i]  else round(float(c), 2))
+            lows.append( round(float(raw_low[i]),   2) if i < len(raw_low)   and raw_low[i]   else round(float(c), 2))
+            closes.append(round(float(c), 2))
+            vols.append(  int(raw_vol[i])               if i < len(raw_vol)   and raw_vol[i]   else 0)
 
-        if not rows:
-            return {'date': date_label, 'times': [], 'open': [], 'high': [],
-                    'low': [], 'close': [], 'vol': [], 'vwap': [], 'msg': '無盤中資料'}
+        if not closes:
+            raise ValueError("資料過濾後為空")
 
-        df = pd.DataFrame(rows)
-        for col in ['open','close','max','min','volume','Trading_Volume']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+        # VWAP
+        cum_pv  = 0.0
+        cum_vol = 0
+        vwap    = []
+        for c, v in zip(closes, vols):
+            cum_pv  += c * v
+            cum_vol += v
+            vwap.append(round(cum_pv / cum_vol, 2) if cum_vol > 0 else c)
 
-        close_col = 'close'
-        vol_col   = 'volume' if 'volume' in df.columns else 'Trading_Volume'
-        high_col  = 'max'    if 'max'    in df.columns else 'high'
-        low_col   = 'min'    if 'min'    in df.columns else 'low'
-        open_col  = 'open'
+        # 取得日期標籤
+        trade_date = datetime.fromtimestamp(
+            ts[0], tz=timezone.utc
+        ).astimezone(timezone(tz_offset)).strftime("%Y-%m-%d")
 
-        # 時間欄位處理
-        time_col = 'datetime' if 'datetime' in df.columns else 'date'
-        df = df.sort_values(time_col).reset_index(drop=True)
-
-        close_s = df[close_col].fillna(method='ffill').fillna(0)
-        vol_s   = df[vol_col].fillna(0) if vol_col in df.columns else pd.Series([0]*len(df))
-
-        # VWAP（成交量加權平均價）
-        cum_vol = vol_s.cumsum()
-        cum_pv  = (close_s * vol_s).cumsum()
-        vwap    = (cum_pv / cum_vol.where(cum_vol > 0, other=1)).round(2)
-
-        # 時間標籤
-        if 'datetime' in df.columns:
-            times = df['datetime'].astype(str).str[-8:].str[:5].tolist()  # HH:MM
-        else:
-            times = df['date'].astype(str).tolist()
+        regular_hours = meta.get("regularMarketTime")
+        market_state  = meta.get("marketState", "")
+        status_note   = "（盤中即時）" if market_state == "REGULAR" else "（收盤後）"
 
         return {
-            'date':   date_label,
-            'times':  times,
-            'open':   clean(df[open_col].tolist() if open_col in df.columns else close_s.tolist()),
-            'high':   clean(df[high_col].tolist() if high_col in df.columns else close_s.tolist()),
-            'low':    clean(df[low_col].tolist()  if low_col  in df.columns else close_s.tolist()),
-            'close':  clean(close_s.tolist()),
-            'vol':    clean(vol_s.tolist()),
-            'vwap':   clean(vwap.tolist()),
+            "date":   trade_date,
+            "status": status_note,
+            "times":  times,
+            "open":   opens,
+            "high":   highs,
+            "low":    lows,
+            "close":  closes,
+            "vol":    vols,
+            "vwap":   vwap,
+            "msg":    "",
         }
+
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
