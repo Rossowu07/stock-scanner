@@ -445,7 +445,132 @@ async def get_chart(code: str, token: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
-@app.get("/api/chip/{code}")
+@app.get("/api/fundamental/{code}")
+async def get_fundamental(code: str, token: str):
+    """抓取基本面資料：月營收、綜合損益表、股利政策"""
+    try:
+        from datetime import timezone
+        today  = datetime.today()
+        y      = today.year
+        # 月營收：近12個月
+        rev_start = (today - timedelta(days=400)).strftime('%Y-%m-%d')
+        rev_end   = today.strftime('%Y-%m-%d')
+        # 財報：近2年
+        fin_start = f"{y-2}-01-01"
+        fin_end   = today.strftime('%Y-%m-%d')
+        # 股利：近5年
+        div_start = f"{y-5}-01-01"
+        div_end   = today.strftime('%Y-%m-%d')
+
+        result = {
+            'revenue': [], 'financial': [],
+            'dividend': [], 'per_pbr': {},
+        }
+
+        # ── 月營收 ──────────────────────────────────────
+        try:
+            d = finmind_get('TaiwanStockMonthRevenue', code, rev_start, rev_end, token)
+            print(f"[fund] revenue msg={d.get('msg')} count={len(d.get('data',[]))}")
+            if d.get('data'):
+                df = pd.DataFrame(d['data']).sort_values('date')
+                for col in ['revenue','last_month_revenue','last_year_month_revenue']:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                rows = []
+                for _, row in df.tail(13).iterrows():
+                    rev    = safe_float(row.get('revenue', 0), 0)
+                    lm_rev = safe_float(row.get('last_month_revenue', 0), 0)
+                    ly_rev = safe_float(row.get('last_year_month_revenue', 0), 0)
+                    mom    = round((rev - lm_rev) / lm_rev * 100, 1) if lm_rev > 0 else 0
+                    yoy    = round((rev - ly_rev) / ly_rev * 100, 1) if ly_rev > 0 else 0
+                    rows.append({
+                        'date':  str(row.get('date','')),
+                        'revenue': rev,
+                        'mom': mom,  # 月增率
+                        'yoy': yoy,  # 年增率
+                    })
+                result['revenue'] = rows
+        except Exception as e:
+            print(f"[fund] revenue error: {e}")
+
+        # ── 綜合損益表（EPS、營業利益率） ───────────────
+        try:
+            d = finmind_get('TaiwanStockFinancialStatements', code, fin_start, fin_end, token)
+            print(f"[fund] financial msg={d.get('msg')} count={len(d.get('data',[]))}")
+            if d.get('data'):
+                df = pd.DataFrame(d['data'])
+                df['value'] = pd.to_numeric(df.get('value', pd.Series(dtype=float)), errors='coerce').fillna(0)
+                # 取出各季的關鍵指標
+                dates = sorted(df['date'].unique())[-8:] if 'date' in df.columns else []
+                rows = []
+                for dt in dates:
+                    sub  = df[df['date'] == dt]
+                    def get_val(typ):
+                        r = sub[sub['type'] == typ]
+                        return safe_float(r['value'].iloc[0], 2) if not r.empty else None
+                    eps         = get_val('EPS')
+                    op_income   = get_val('營業利益')
+                    revenue     = get_val('營業收入')
+                    net_income  = get_val('本期淨利（淨損）')
+                    op_margin   = round(op_income / revenue * 100, 1) if op_income and revenue and revenue != 0 else None
+                    net_margin  = round(net_income / revenue * 100, 1) if net_income and revenue and revenue != 0 else None
+                    rows.append({
+                        'date': str(dt), 'eps': eps,
+                        'op_margin': op_margin, 'net_margin': net_margin,
+                        'op_income': op_income, 'revenue': revenue,
+                    })
+                result['financial'] = [r for r in rows if r['eps'] is not None or r['op_margin'] is not None]
+        except Exception as e:
+            print(f"[fund] financial error: {e}")
+
+        # ── 股利政策 ─────────────────────────────────────
+        try:
+            d = finmind_get('TaiwanStockDividend', code, div_start, div_end, token)
+            print(f"[fund] dividend msg={d.get('msg')} count={len(d.get('data',[]))}")
+            if d.get('data'):
+                df = pd.DataFrame(d['data']).sort_values('date')
+                for col in ['CashDividend','StockDividend','CashEarningsDistribution',
+                            'StockEarningsDistribution']:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                rows = []
+                for _, row in df.tail(5).iterrows():
+                    cash  = safe_float(row.get('CashDividend', 0), 2)
+                    stock = safe_float(row.get('StockDividend', 0), 2)
+                    total = round(cash + stock, 2)
+                    rows.append({
+                        'date':  str(row.get('date','')),
+                        'cash':  cash,
+                        'stock': stock,
+                        'total': total,
+                    })
+                result['dividend'] = rows
+        except Exception as e:
+            print(f"[fund] dividend error: {e}")
+
+        # ── PER / PBR（從技術面股價資料推算） ────────────
+        try:
+            d = finmind_get('TaiwanStockPER', code,
+                (today - timedelta(days=10)).strftime('%Y-%m-%d'),
+                today.strftime('%Y-%m-%d'), token)
+            if d.get('data'):
+                latest = d['data'][-1]
+                result['per_pbr'] = {
+                    'date': latest.get('date',''),
+                    'per':  safe_float(latest.get('PER', 0), 1),
+                    'pbr':  safe_float(latest.get('PBR', 0), 2),
+                    'dividend_yield': safe_float(latest.get('dividend_yield', 0), 2),
+                }
+        except Exception as e:
+            print(f"[fund] per_pbr error (non-critical): {e}")
+
+        return result
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
 async def get_chip(code: str, token: str):
     """獨立抓取最新籌碼資料（三大法人 + 融資融券）"""
     try:
