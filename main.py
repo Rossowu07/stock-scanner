@@ -91,25 +91,29 @@ class StrategyRequest(BaseModel):
 
 # ── FinMind 資料抓取 ──────────────────────────────────────
 def finmind_get(dataset, stock_id, start, end, token):
-    """統一的 FinMind API 呼叫，用 urllib 避免 requests 重新編碼 URL"""
-    import urllib.request, urllib.error
-    url = (
-        f"https://api.finmindtrade.com/api/v4/data"
-        f"?dataset={dataset}"
-        f"&data_id={stock_id}"
-        f"&start_date={start}"
-        f"&end_date={end}"
-        f"&token={token}"
+    """用 POST + JSON body 呼叫 FinMind，完全避免 URL 參數編碼問題"""
+    import json as _json, urllib.request
+    payload = _json.dumps({
+        "dataset":    dataset,
+        "data_id":    stock_id,
+        "start_date": start,
+        "end_date":   end,
+        "token":      token,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.finmindtrade.com/api/v4/data",
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+        method="POST",
     )
-    print(f"[finmind] GET {url[:120]}...")
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    print(f"[finmind] POST dataset={dataset} data_id={stock_id} start={start} end={end}")
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            import json as _json
-            return _json.loads(resp.read().decode('utf-8'))
+            return _json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', errors='ignore')
-        raise Exception(f"HTTP {e.code}: {body[:200]}")
+        body = e.read().decode("utf-8", errors="ignore")
+        print(f"[finmind] ERROR {e.code}: {body[:300]}")
+        raise Exception(f"FinMind HTTP {e.code}: {body[:200]}")
 
 def fetch_finmind(stock_id, token, days=120):
     end   = datetime.today().strftime('%Y-%m-%d')
