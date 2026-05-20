@@ -135,6 +135,23 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .ind-val { font-size: 15px; font-weight: 600; }
 .ind-desc { font-size: 11px; color: var(--text-3); margin-top: 2px; }
 
+/* 基本面頁籤 */
+.fund-section { margin-bottom:16px; }
+.fund-title { font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:center; }
+.fund-date { font-size:11px;font-weight:400;color:var(--text-3); }
+.fund-grid3 { display:grid;grid-template-columns:repeat(3,1fr);gap:8px; }
+.fund-grid2 { display:grid;grid-template-columns:repeat(2,1fr);gap:8px; }
+.fund-card { border:1px solid var(--border-light);border-radius:var(--radius-sm);padding:10px 12px; }
+.fund-lbl { font-size:11px;color:var(--text-3);margin-bottom:3px; }
+.fund-val { font-size:18px;font-weight:600;margin-bottom:4px; }
+.fund-hint { font-size:11px;color:var(--text-2);margin-top:6px;line-height:1.5; }
+.fund-row { display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-top:3px; }
+.fund-rev-row { display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid var(--border-light); }
+.fund-table { width:100%;border-collapse:collapse;font-size:13px; }
+.fund-table th { padding:7px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);background:var(--bg);border-bottom:1px solid var(--border-light); }
+.fund-table td { padding:7px 10px;border-bottom:1px solid var(--border-light); }
+.fund-table tr:last-child td { border-bottom:none; }
+
 /* 籌碼面頁籤專用樣式 */
 .chip-section-title { font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border-light); }
 .chip-grid-wide { display:flex;flex-direction:column;gap:8px; }
@@ -291,6 +308,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div class="dtab" onclick="switchDTab('bb',this)">布林通道</div>
     <div class="dtab" onclick="switchDTab('intraday',this)">盤中走勢</div>
     <div class="dtab" onclick="switchDTab('chip',this)">📊 籌碼面</div>
+    <div class="dtab" onclick="switchDTab('fundamental',this)">📋 基本面</div>
     <div class="dtab" onclick="switchDTab('info',this)">指標摘要</div>
     <div class="dtab" onclick="switchDTab('strategy',this)">📋 操作建議</div>
   </div>
@@ -344,6 +362,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     </div>
     <div id="dChip" style="display:none">
       <div id="chipContent"><div style="padding:30px;text-align:center;color:#888;font-size:13px">載入籌碼資料中...</div></div>
+    </div>
+    <div id="dFundamental" style="display:none">
+      <div id="fundamentalContent"><div style="padding:30px;text-align:center;color:#888;font-size:13px">載入基本面資料中...</div></div>
     </div>
     <div id="dInfo" style="display:none">
       <div class="ind-grid" id="indGrid"></div>
@@ -610,7 +631,7 @@ function closeDrawer() {
 
 async function switchDTab(tabId, btn) {
   currentDTab = tabId;
-  const allTabs = ['candle','vol','macd','rsi','bb','intraday','chip','info','strategy'];
+  const allTabs = ['candle','vol','macd','rsi','bb','intraday','chip','fundamental','info','strategy'];
   allTabs.forEach(t => {
     const el = document.getElementById('d' + t.charAt(0).toUpperCase() + t.slice(1));
     if (el) el.style.display = t === tabId ? 'block' : 'none';
@@ -620,6 +641,8 @@ async function switchDTab(tabId, btn) {
   if (currentStock) {
     if (tabId === 'chip') {
       await loadChipTab(currentStock);
+    } else if (tabId === 'fundamental') {
+      await loadFundamentalTab(currentStock);
     } else if (tabId !== 'info' && tabId !== 'strategy') {
       destroyCharts();
       await loadAndRender(currentStock, tabId);
@@ -1008,6 +1031,163 @@ function buildIndGrid(r) {
   }
 
   document.getElementById('indGrid').innerHTML = regularCards + bbCard + chipSection;
+}
+
+async function loadFundamentalTab(code) {
+  const content = document.getElementById('fundamentalContent');
+  content.innerHTML = '<div style="padding:30px;text-align:center;color:#888;font-size:13px">載入基本面資料中...</div>';
+  const token = document.getElementById('tokenInput').value.trim();
+  try {
+    const resp = await fetch(`/api/fundamental/${code}?token=${encodeURIComponent(token)}`);
+    if (!resp.ok) throw new Error('API 回應 ' + resp.status);
+    const d = await resp.json();
+    if (d.detail) throw new Error(d.detail);
+    renderFundamentalTab(d, content);
+  } catch(e) {
+    content.innerHTML = `<div style="padding:20px;color:#c0392b;font-size:13px">⚠️ 基本面資料載入失敗：${e.message}</div>`;
+  }
+}
+
+function renderFundamentalTab(d, container) {
+  const fmt  = v => v == null ? '—' : v.toLocaleString();
+  const fmtM = v => v == null ? '—' : (Math.abs(v) >= 1e8 ? (v/1e8).toFixed(1)+'億' : Math.abs(v) >= 1e4 ? (v/1e4).toFixed(0)+'萬' : v.toLocaleString());
+  const pct  = v => v == null ? '—' : (v > 0 ? `<span style="color:var(--green)">+${v}%</span>` : `<span style="color:var(--red)">${v}%</span>`);
+  const clr  = v => v == null ? '' : v > 0 ? 'color:var(--green);font-weight:600' : v < 0 ? 'color:var(--red);font-weight:600' : '';
+
+  let html = '';
+
+  // ── PER / PBR ──────────────────────────────────────
+  if (d.per_pbr && d.per_pbr.per) {
+    const p = d.per_pbr;
+    html += `
+    <div class="fund-section">
+      <div class="fund-title">本益比 / 股價淨值比 <span class="fund-date">${p.date}</span></div>
+      <div class="fund-grid3">
+        <div class="fund-card">
+          <div class="fund-lbl">本益比 PER</div>
+          <div class="fund-val">${p.per}x</div>
+          <div class="fund-hint">${p.per < 15 ? '✅ 偏低，估值合理' : p.per < 25 ? '➡️ 中等水位' : '⚠️ 偏高，注意風險'}</div>
+        </div>
+        <div class="fund-card">
+          <div class="fund-lbl">股價淨值比 PBR</div>
+          <div class="fund-val">${p.pbr}x</div>
+          <div class="fund-hint">${p.pbr < 1.5 ? '✅ 低於帳面價值，偏便宜' : p.pbr < 3 ? '➡️ 合理範圍' : '⚠️ 偏高'}</div>
+        </div>
+        <div class="fund-card">
+          <div class="fund-lbl">殖利率</div>
+          <div class="fund-val">${p.dividend_yield}%</div>
+          <div class="fund-hint">${p.dividend_yield >= 4 ? '✅ 高殖利率，配息穩健' : p.dividend_yield >= 2 ? '➡️ 殖利率正常' : '⬜ 殖利率偏低'}</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ── 月營收 ──────────────────────────────────────────
+  if (d.revenue && d.revenue.length) {
+    const latest = d.revenue[d.revenue.length - 1];
+    const prev3  = d.revenue.slice(-4, -1);
+    const avgYoy = prev3.length ? (prev3.reduce((a,b)=>a+b.yoy,0)/prev3.length).toFixed(1) : null;
+    html += `
+    <div class="fund-section">
+      <div class="fund-title">月營收 <span class="fund-date">最新：${latest.date}</span></div>
+      <div class="fund-grid2">
+        <div class="fund-card">
+          <div class="fund-lbl">最新月營收</div>
+          <div class="fund-val">${fmtM(latest.revenue)}</div>
+          <div class="fund-row"><span class="fund-lbl">月增率</span><span style="${clr(latest.mom)}">${latest.mom > 0 ? '+':''}${latest.mom}%</span></div>
+          <div class="fund-row"><span class="fund-lbl">年增率</span><span style="${clr(latest.yoy)}">${latest.yoy > 0 ? '+':''}${latest.yoy}%</span></div>
+          <div class="fund-hint">${
+            latest.yoy >= 20 ? '✅ 營收高速成長，基本面強勁' :
+            latest.yoy >= 5  ? '📈 營收穩健成長' :
+            latest.yoy >= 0  ? '➡️ 營收持平' :
+                               '⚠️ 營收衰退，注意基本面風險'
+          }</div>
+        </div>
+        <div class="fund-card">
+          <div class="fund-lbl">近3個月平均年增率</div>
+          <div class="fund-val" style="${clr(parseFloat(avgYoy))}">${avgYoy != null ? (avgYoy > 0 ? '+':'') + avgYoy + '%' : '—'}</div>
+          <div class="fund-lbl" style="margin-top:10px">近期月營收趨勢</div>
+          <div style="margin-top:6px">
+            ${d.revenue.slice(-6).map(r => `
+              <div class="fund-rev-row">
+                <span class="fund-lbl">${r.date.slice(0,7)}</span>
+                <span style="font-size:12px;font-variant-numeric:tabular-nums">${fmtM(r.revenue)}</span>
+                <span style="font-size:11px;${clr(r.yoy)};margin-left:4px">${r.yoy > 0?'+':''}${r.yoy}%</span>
+              </div>`).join('')}
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ── 財務指標（EPS / 營益率） ─────────────────────────
+  if (d.financial && d.financial.length) {
+    const rows = d.financial.slice(-6).reverse();
+    html += `
+    <div class="fund-section">
+      <div class="fund-title">財務指標（季報）</div>
+      <div style="overflow-x:auto">
+        <table class="fund-table">
+          <thead><tr>
+            <th>期別</th><th style="text-align:right">EPS</th>
+            <th style="text-align:right">營益率</th><th style="text-align:right">淨利率</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(r => `<tr>
+              <td>${r.date}</td>
+              <td style="text-align:right;${clr(r.eps)}">${r.eps != null ? r.eps : '—'}</td>
+              <td style="text-align:right;${clr(r.op_margin)}">${r.op_margin != null ? r.op_margin+'%' : '—'}</td>
+              <td style="text-align:right;${clr(r.net_margin)}">${r.net_margin != null ? r.net_margin+'%' : '—'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="fund-hint" style="margin-top:8px">${(() => {
+        const eps_vals = rows.map(r=>r.eps).filter(v=>v!=null);
+        if (eps_vals.length < 2) return '';
+        const latest_eps = eps_vals[0], prev_eps = eps_vals[1];
+        if (latest_eps > 0 && latest_eps > prev_eps) return '✅ EPS 季增，獲利持續改善，基本面支撐短線操作';
+        if (latest_eps > 0) return '📈 EPS 正值，公司獲利中';
+        return '⚠️ EPS 下滑或虧損，短線操作需謹慎';
+      })()}</div>
+    </div>`;
+  }
+
+  // ── 股利政策 ─────────────────────────────────────────
+  if (d.dividend && d.dividend.length) {
+    html += `
+    <div class="fund-section">
+      <div class="fund-title">近期股利政策</div>
+      <div style="overflow-x:auto">
+        <table class="fund-table">
+          <thead><tr>
+            <th>年度</th><th style="text-align:right">現金股利</th>
+            <th style="text-align:right">股票股利</th><th style="text-align:right">合計</th>
+          </tr></thead>
+          <tbody>
+            ${d.dividend.slice().reverse().map(r => `<tr>
+              <td>${r.date.slice(0,4)}</td>
+              <td style="text-align:right">${r.cash > 0 ? r.cash : '—'}</td>
+              <td style="text-align:right">${r.stock > 0 ? r.stock : '—'}</td>
+              <td style="text-align:right;font-weight:600">${r.total > 0 ? r.total : '—'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  if (!html) {
+    html = '<div style="padding:20px;color:#888;font-size:13px">⚠️ 基本面資料暫無，可能為新上市股票或資料尚未更新</div>';
+  }
+
+  // 短線參考說明
+  html += `<div style="padding:10px 0;font-size:11px;color:var(--text-3);line-height:1.6;margin-top:4px">
+    📌 短線參考重點：月營收年增率持續擴大 + EPS 季增 = 基本面支撐強，技術面突破可信度提高。
+    本益比偏高時，即使技術面訊號好，回調空間也較大。
+  </div>`;
+
+  container.innerHTML = html;
 }
 
 async function loadChipTab(code) {
