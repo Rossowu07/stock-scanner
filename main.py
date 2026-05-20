@@ -90,14 +90,24 @@ class StrategyRequest(BaseModel):
     stock: dict
 
 # ── FinMind 資料抓取 ──────────────────────────────────────
+def finmind_get(dataset, stock_id, start, end, token):
+    """統一的 FinMind API 呼叫，確保參數名稱正確"""
+    url = (
+        f"https://api.finmindtrade.com/api/v4/data"
+        f"?dataset={dataset}"
+        f"&data_id={stock_id}"
+        f"&start_date={start}"
+        f"&end_date={end}"
+        f"&token={token}"
+    )
+    resp = requests.get(url, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
 def fetch_finmind(stock_id, token, days=120):
     end   = datetime.today().strftime('%Y-%m-%d')
     start = (datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')
-    resp  = requests.get('https://api.finmindtrade.com/api/v4/data',
-        params={'dataset':'TaiwanStockPrice','data_id':stock_id,
-                'start_date':start,'end_date':end,'token':token}, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
+    data  = finmind_get('TaiwanStockPrice', stock_id, start, end, token)
     if not data.get('data'): raise ValueError(f"無資料：{data.get('msg','')}")
     df = pd.DataFrame(data['data']).sort_values('date').reset_index(drop=True)
     for col in ['open','close','max','min']:
@@ -110,22 +120,14 @@ def fetch_finmind(stock_id, token, days=120):
 def fetch_institutional(stock_id, token, days=35):
     end   = datetime.today().strftime('%Y-%m-%d')
     start = (datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')
-    resp  = requests.get('https://api.finmindtrade.com/api/v4/data',
-        params={'dataset':'TaiwanStockInstitutionalInvestors','data_id':stock_id,
-                'start_date':start,'end_date':end,'token':token}, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
+    data  = finmind_get('TaiwanStockInstitutionalInvestors', stock_id, start, end, token)
     print(f"[inst] {stock_id} msg={data.get('msg')} count={len(data.get('data',[]))}")
     if not data.get('data'): return pd.DataFrame()
     df = pd.DataFrame(data['data'])
     print(f"[inst] {stock_id} cols={df.columns.tolist()}")
-
-    # 欄位名稱全部轉小寫，統一處理
     df.columns = [c.lower() for c in df.columns]
-
     if 'name' in df.columns:
         print(f"[inst] {stock_id} names={df['name'].unique().tolist()}")
-
     for col in ['buy','sell']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -137,16 +139,11 @@ def fetch_institutional(stock_id, token, days=35):
 def fetch_margin(stock_id, token, days=35):
     end   = datetime.today().strftime('%Y-%m-%d')
     start = (datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')
-    resp  = requests.get('https://api.finmindtrade.com/api/v4/data',
-        params={'dataset':'TaiwanStockMarginPurchaseShortsale','data_id':stock_id,
-                'start_date':start,'end_date':end,'token':token}, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
+    data  = finmind_get('TaiwanStockMarginPurchaseShortsale', stock_id, start, end, token)
     print(f"[margin] {stock_id} msg={data.get('msg')} count={len(data.get('data',[]))}")
     if not data.get('data'): return pd.DataFrame()
     df = pd.DataFrame(data['data'])
     print(f"[margin] {stock_id} cols={df.columns.tolist()}")
-    # 所有非日期/代號欄位轉數值
     for col in df.columns:
         if col not in ['date','stock_id']:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -319,10 +316,7 @@ async def verify_token(token: str):
     try:
         end   = datetime.today().strftime('%Y-%m-%d')
         start = (datetime.today() - timedelta(days=5)).strftime('%Y-%m-%d')
-        resp  = requests.get('https://api.finmindtrade.com/api/v4/data',
-            params={'dataset':'TaiwanStockPrice','data_id':'2330',
-                    'start_date':start,'end_date':end,'token':token}, timeout=10)
-        data = resp.json()
+        data  = finmind_get('TaiwanStockPrice', '2330', start, end, token)
         if data.get('data') or data.get('msg') == 'success':
             return {"ok": True}
         return {"ok": False, "msg": data.get('msg','Token 無效')}
