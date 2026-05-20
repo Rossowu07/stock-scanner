@@ -135,6 +135,137 @@ def fetch_finmind(stock_id: str, token: str, days: int = 120):
         raise ValueError('資料筆數不足')
     return df
 
+def fetch_institutional(stock_id: str, token: str, days: int = 30) -> pd.DataFrame:
+    """三大法人買賣超"""
+    end_date   = datetime.today().strftime('%Y-%m-%d')
+    start_date = (datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')
+    resp = requests.get(
+        'https://api.finmindtrade.com/api/v4/data',
+        params={
+            'dataset':    'TaiwanStockInstitutionalInvestors',
+            'data_id':    stock_id,
+            'start_date': start_date,
+            'end_date':   end_date,
+            'token':      token,
+        },
+        timeout=15
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get('data'):
+        return pd.DataFrame()
+    df = pd.DataFrame(data['data'])
+    df['buy']  = pd.to_numeric(df.get('buy',  pd.Series(dtype=float)), errors='coerce').fillna(0)
+    df['sell'] = pd.to_numeric(df.get('sell', pd.Series(dtype=float)), errors='coerce').fillna(0)
+    df['net']  = df['buy'] - df['sell']
+    return df.sort_values('date').reset_index(drop=True)
+
+def fetch_margin(stock_id: str, token: str, days: int = 30) -> pd.DataFrame:
+    """融資融券餘額"""
+    end_date   = datetime.today().strftime('%Y-%m-%d')
+    start_date = (datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')
+    resp = requests.get(
+        'https://api.finmindtrade.com/api/v4/data',
+        params={
+            'dataset':    'TaiwanStockMarginPurchaseShortsale',
+            'data_id':    stock_id,
+            'start_date': start_date,
+            'end_date':   end_date,
+            'token':      token,
+        },
+        timeout=15
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get('data'):
+        return pd.DataFrame()
+    df = pd.DataFrame(data['data'])
+    for col in ['MarginPurchaseBuy','MarginPurchaseSell','MarginPurchaseRedeem',
+                'MarginPurchaseTodayBalance','ShortSaleBuy','ShortSaleSell',
+                'ShortSaleTodayBalance']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    return df.sort_values('date').reset_index(drop=True)
+
+def calc_chip(inst_df: pd.DataFrame, margin_df: pd.DataFrame) -> dict:
+    """計算籌碼面指標，回傳結構化結果"""
+    result = {
+        # 三大法人
+        'foreign_5d': 0, 'foreign_20d': 0, 'foreign_today': 0,
+        'trust_5d':   0, 'trust_20d':   0, 'trust_today':   0,
+        'dealer_5d':  0, 'dealer_5d':   0, 'dealer_today':  0,
+        'inst_total_5d': 0, 'inst_total_20d': 0,
+        # 融資融券
+        'margin_balance': 0, 'margin_change_5d': 0, 'margin_ratio': 0.0,
+        'short_balance':  0, 'short_change_5d':  0,
+        'margin_healthy': False,
+        # 籌碼訊號
+        'foreign_buying':  False,
+        'trust_buying':    False,
+        'margin_safe':     False,
+        'chip_score':      0,
+        'chip_available':  False,
+    }
+
+    # ── 三大法人 ────────────────────────────────────────
+    if not inst_df.empty and 'name' in inst_df.columns:
+        result['chip_available'] = True
+        for name_key, prefix in [
+            ('外資', 'foreign'), ('外資自營商', 'foreign'),
+            ('投信', 'trust'), ('自營商', 'dealer'),
+        ]:
+            sub = inst_df[inst_df['name'] == name_key].copy()
+            if sub.empty:
+                continue
+            net = sub['net']
+            if prefix == 'foreign':
+                result['foreign_today']  = safe_float(net.iloc[-1], 0)
+                result['foreign_5d']     = safe_float(net.tail(5).sum(), 0)
+                result['foreign_20d']    = safe_float(net.tail(20).sum(), 0)
+            elif prefix == 'trust':
+                result['trust_today']    = safe_float(net.iloc[-1], 0)
+                result['trust_5d']       = safe_float(net.tail(5).sum(), 0)
+                result['trust_20d']      = safe_float(net.tail(20).sum(), 0)
+            elif prefix == 'dealer':
+                result['dealer_today']   = safe_float(net.iloc[-1], 0)
+                result['dealer_5d']      = safe_float(net.tail(5).sum(), 0)
+
+        # 三大法人合計
+        dates = inst_df['date'].unique()
+        totals = []
+        for d in sorted(dates):
+            day_net = inst_df[inst_df['date'] == d]['net'].sum()
+            totals.append(day_net)
+        totals_s = pd.Series(totals)
+        result['inst_total_5d']  = safe_float(totals_s.tail(5).sum(),  0)
+        result['inst_total_20d'] = safe_float(totals_s.tail(20).sum(), 0)
+
+        result['foreign_buying'] = result['foreign_5d'] > 0
+        result['trust_buying']   = result['trust_5d']   > 0
+
+    # ── 融資融券 ────────────────────────────────────────
+    if not margin_df.empty:
+        result['chip_available'] = True
+        if 'MarginPurchaseTodayBalance' in margin_df.columns:
+            mb = margin_df['MarginPurchaseTodayBalance']
+            result['margin_balance']   = safe_float(mb.iloc[-1], 0)
+            result['margin_change_5d'] = safe_float(mb.iloc[-1] - mb.iloc[-6] if len(mb) >= 6 else 0, 0)
+        if 'ShortSaleTodayBalance' in margin_df.columns:
+            sb = margin_df['ShortSaleTodayBalance']
+            result['short_balance']   = safe_float(sb.iloc[-1], 0)
+            result['short_change_5d'] = safe_float(sb.iloc[-1] - sb.iloc[-6] if len(sb) >= 6 else 0, 0)
+        # 融資健康：餘額減少（散戶出場）或融券增加（空頭回補動能）
+        result['margin_healthy'] = result['margin_change_5d'] <= 0
+        result['margin_safe']    = result['margin_healthy']
+
+    # ── 籌碼評分（3分滿分）────────────────────────────
+    chip_score = 0
+    if result['foreign_buying']:  chip_score += 1
+    if result['trust_buying']:    chip_score += 1
+    if result['margin_safe']:     chip_score += 1
+    result['chip_score'] = chip_score
+    return result
+
 def calc_rsi(closes: pd.Series, period=14) -> float:
     delta = closes.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
@@ -207,9 +338,9 @@ def analyze(stock_id: str, df: pd.DataFrame, cfg: ScanRequest) -> dict:
         'ma_bullish':        ma5 > ma10 > ma20,
     }
     main = ['price_breakout','volume_surge','macd_positive','rsi_strong','ma_bullish']
-    score     = sum(signals[k] for k in main)
-    score_pct = score / len(main) * 100
-    strength  = 'strong' if score >= 4 else ('medium' if score == 3 else 'weak')
+    tech_score = sum(signals[k] for k in main)
+    score_pct  = tech_score / len(main) * 100
+    strength   = 'strong' if tech_score >= 4 else ('medium' if tech_score == 3 else 'weak')
 
     return {
         'code': stock_id,
@@ -222,17 +353,27 @@ def analyze(stock_id: str, df: pd.DataFrame, cfg: ScanRequest) -> dict:
         'ma10': safe_float(ma10, 2),
         'ma20': safe_float(ma20, 2),
         'macd_hist': safe_float(hist_now, 4),
-        'score': score,
-        'score_pct': safe_float(score_pct, 1),
-        'strength': strength,
-        'bb_upper': safe_float(bb_upper_now, 2),
-        'bb_mid':   safe_float(bb_mid_now, 2),
-        'bb_lower': safe_float(bb_lower_now, 2),
-        'bb_position': safe_float(bb_position, 1),
-        'bb_width':    safe_float(bb_width_now, 1),
+        'score':      tech_score,
+        'score_pct':  safe_float(score_pct, 1),
+        'strength':   strength,
+        'bb_upper':   safe_float(bb_upper_now, 2),
+        'bb_mid':     safe_float(bb_mid_now, 2),
+        'bb_lower':   safe_float(bb_lower_now, 2),
+        'bb_position':safe_float(bb_position, 1),
+        'bb_width':   safe_float(bb_width_now, 1),
         'bb_expanding': bb_expanding,
         **{k: signals[k] for k in signals},
         '_df': df,
+        # 籌碼面預留欄位（掃描後由 scan endpoint 填入）
+        'chip_score': 0, 'chip_available': False,
+        'foreign_5d': 0, 'foreign_20d': 0, 'foreign_today': 0,
+        'trust_5d': 0, 'trust_20d': 0, 'trust_today': 0,
+        'dealer_5d': 0, 'dealer_today': 0,
+        'inst_total_5d': 0, 'inst_total_20d': 0,
+        'margin_balance': 0, 'margin_change_5d': 0,
+        'short_balance': 0,  'short_change_5d': 0,
+        'foreign_buying': False, 'trust_buying': False, 'margin_safe': False,
+        'total_score': tech_score, 'total_score_pct': safe_float(score_pct, 1),
     }
 
 # ── API 路由 ────────────────────────────────────────────
@@ -275,14 +416,37 @@ async def scan(req: ScanRequest):
     results, errors = [], []
     for code in codes:
         try:
-            df  = fetch_finmind(code, req.token)
-            r   = analyze(code, df, req)
+            df = fetch_finmind(code, req.token)
+            r  = analyze(code, df, req)
+
+            # 抓籌碼資料（獨立 try，失敗不影響技術面結果）
+            try:
+                inst_df   = fetch_institutional(code, req.token, days=35)
+                margin_df = fetch_margin(code, req.token, days=35)
+                chip      = calc_chip(inst_df, margin_df)
+                r.update(chip)
+            except Exception:
+                pass  # 籌碼資料失敗靜默處理
+
+            # 合併總分（技術5 + 籌碼3 = 滿分8）
+            chip_score = r.get('chip_score', 0)
+            tech_score = r.get('score', 0)
+            total      = tech_score + chip_score
+            total_pct  = round(total / 8 * 100, 1)
+            # 重新判斷強度（以8分為基準）
+            if total >= 6:   strength = 'strong'
+            elif total >= 4: strength = 'medium'
+            else:            strength = 'weak'
+            r['total_score']     = total
+            r['total_score_pct'] = total_pct
+            r['strength']        = strength
+
             results.append({k: v for k, v in r.items() if k != '_df'})
         except Exception as e:
             errors.append({'code': code, 'error': str(e)})
 
     return {
-        'results': sorted(results, key=lambda x: x['score'], reverse=True),
+        'results': sorted(results, key=lambda x: x['total_score'], reverse=True),
         'errors':  errors,
         'scanned': len(codes),
         'success': len(results),
@@ -302,7 +466,177 @@ def clean(lst):
             result.append(None)
     return result
 
-@app.get("/api/chart/{code}")
+class StrategyRequest(BaseModel):
+    stock: dict  # 前端傳來的完整股票資料
+
+@app.post("/api/strategy")
+async def get_strategy(req: StrategyRequest):
+    """根據技術面 + 籌碼面資料，產生短中長線操作建議"""
+    import traceback
+    try:
+        r = req.stock
+        code  = r.get('code','')
+        name  = r.get('name','')
+        price = r.get('price', 0)
+
+        # 收集各面向分數
+        tech_score  = r.get('score', 0)           # 技術面 /5
+        chip_score  = r.get('chip_score', 0)       # 籌碼面 /3
+        total_score = r.get('total_score', 0)      # 總分 /8
+        chip_avail  = r.get('chip_available', False)
+
+        # 技術指標
+        ma_bullish      = r.get('ma_bullish', False)
+        macd_positive   = r.get('macd_positive', False)
+        macd_golden     = r.get('macd_golden_cross', False)
+        rsi             = r.get('rsi', 50)
+        rsi_strong      = r.get('rsi_strong', False)
+        price_breakout  = r.get('price_breakout', False)
+        volume_surge    = r.get('volume_surge', False)
+        bb_position     = r.get('bb_position', 50)
+        bb_expanding    = r.get('bb_expanding', False)
+        bb_upper        = r.get('bb_upper', 0)
+        bb_lower        = r.get('bb_lower', 0)
+        bb_mid          = r.get('bb_mid', 0)
+
+        # 籌碼指標
+        foreign_buying  = r.get('foreign_buying', False)
+        trust_buying    = r.get('trust_buying', False)
+        margin_safe     = r.get('margin_safe', False)
+        foreign_5d      = r.get('foreign_5d', 0)
+        foreign_20d     = r.get('foreign_20d', 0)
+        trust_5d        = r.get('trust_5d', 0)
+        margin_change   = r.get('margin_change_5d', 0)
+
+        # ── 短線建議（1–5 日）────────────────────────
+        short_signals, short_risks = [], []
+        if macd_golden:     short_signals.append('MACD 剛發生金叉，短線動能轉強')
+        if volume_surge:    short_signals.append(f'成交量放大至均量 {r.get("vol_ratio",1):.1f} 倍，有資金進場')
+        if price_breakout:  short_signals.append('突破近20日高點，短線有突破動能')
+        if rsi_strong:      short_signals.append(f'RSI {rsi:.0f} 在強勢區間，多頭動能足夠')
+        if bb_position > 70 and bb_expanding:
+            short_signals.append('布林通道擴張且偏上軌，短線趨勢向上')
+
+        if rsi > 75:        short_risks.append(f'RSI {rsi:.0f} 已過熱，短線回調風險')
+        if bb_position > 90: short_risks.append(f'股價貼近布林上軌 {bb_upper:.2f}，短線壓力大')
+        if not volume_surge and price_breakout:
+            short_risks.append('突破時量能不足，需確認是否為假突破')
+
+        if len(short_signals) >= 3:
+            short_action = '積極'
+            short_note   = f'多項短線訊號同時出現，可考慮短線進場，留意 {bb_upper:.2f} 壓力'
+        elif len(short_signals) >= 2:
+            short_action = '中性偏多'
+            short_note   = '短線訊號尚可，建議小量試單，嚴設停損'
+        elif short_risks:
+            short_action = '謹慎'
+            short_note   = '短線風險訊號較多，建議觀望或減碼'
+        else:
+            short_action = '觀望'
+            short_note   = '短線訊號不明確，等待更好進場時機'
+
+        # ── 中線建議（1–3 個月）──────────────────────
+        mid_signals, mid_risks = [], []
+        if ma_bullish:       mid_signals.append('均線多頭排列（MA5>MA10>MA20），中線趨勢向上')
+        if macd_positive:    mid_signals.append('MACD 柱狀維持正值，中線多頭動能持續')
+        if foreign_buying and chip_avail:
+            mid_signals.append(f'外資近5日累積買超 {foreign_5d:,.0f} 張，法人持續佈局')
+        if trust_buying and chip_avail:
+            mid_signals.append(f'投信近5日買超 {trust_5d:,.0f} 張，機構資金進場')
+        if margin_safe and chip_avail:
+            mid_signals.append('融資餘額下降，籌碼趨於健康，主力控盤跡象')
+        if bb_expanding and bb_position > 50:
+            mid_signals.append('布林通道擴張且股價在中軌以上，中線趨勢確立')
+
+        if foreign_20d < 0 and chip_avail:
+            mid_risks.append(f'外資近20日累積賣超 {abs(foreign_20d):,.0f} 張，中線偏空')
+        if not ma_bullish:
+            mid_risks.append('均線尚未完整多頭排列，中線趨勢未確立')
+        if margin_change > 0 and chip_avail:
+            mid_risks.append('融資餘額上升，散戶追高風險，籌碼不穩')
+
+        if len(mid_signals) >= 4:
+            mid_action = '積極佈局'
+            mid_note   = f'技術面與籌碼面雙重確認，中線趨勢明確向上，可分批建立部位，支撐參考 MA20 {bb_mid:.2f}'
+        elif len(mid_signals) >= 2:
+            mid_action = '逢低布局'
+            mid_note   = '中線訊號偏正向，建議分批進場，以 MA20 或布林中軌為支撐判斷'
+        elif mid_risks:
+            mid_action = '減碼觀察'
+            mid_note   = '中線風險因素較多，建議降低持倉比重，等待籌碼面改善'
+        else:
+            mid_action = '中性觀察'
+            mid_note   = '中線方向尚未明確，持續追蹤法人動向'
+
+        # ── 長線建議（3個月以上）──────────────────────
+        long_signals, long_risks = [], []
+        if foreign_20d > 0 and chip_avail:
+            long_signals.append(f'外資近20日持續買超 {foreign_20d:,.0f} 張，長線法人看多')
+        if ma_bullish and macd_positive:
+            long_signals.append('技術面趨勢結構完整，均線多頭 + MACD 正值')
+        if margin_safe and chip_avail:
+            long_signals.append('籌碼面健康，融資不追高，有助長線走揚')
+        if total_score >= 6:
+            long_signals.append(f'綜合評分 {total_score}/8，技術面與籌碼面均強')
+
+        if not chip_avail:
+            long_risks.append('籌碼資料未能取得，長線判斷依賴技術面為主')
+        if rsi > 75:
+            long_risks.append('目前 RSI 偏高，長線進場位置不理想，等待回調')
+        if bb_position > 85:
+            long_risks.append(f'股價偏高，距布林下軌支撐 {bb_lower:.2f} 較遠，進場風險高')
+
+        if len(long_signals) >= 3 and len(long_risks) == 0:
+            long_action = '長線買進'
+            long_note   = f'多項長線正向訊號，適合分批建立長期部位，支撐參考 {bb_lower:.2f}（布林下軌）'
+        elif len(long_signals) >= 2:
+            long_action = '分批建倉'
+            long_note   = '長線條件尚可，建議小量分批建倉，持續追蹤外資與法人動向'
+        elif long_risks:
+            long_action = '等待時機'
+            long_note   = '目前進場位置風險偏高，建議等待回調至較低位置再考慮長線佈局'
+        else:
+            long_action = '持續觀察'
+            long_note   = '長線訊號尚不明確，持續追蹤基本面與籌碼面變化'
+
+        # ── 整體風險提示 ──────────────────────────────
+        risk_warnings = []
+        if not chip_avail:
+            risk_warnings.append('⚠️ 籌碼面資料取得失敗，以上建議僅基於技術面分析')
+        if rsi > 80:
+            risk_warnings.append(f'⚠️ RSI {rsi:.0f} 極度過熱，任何操作需謹慎')
+        if bb_position > 95:
+            risk_warnings.append('⚠️ 股價已突破布林上軌，極端強勢但回調風險極高')
+        risk_warnings.append('⚠️ 以上為技術面與籌碼面分析，不構成投資建議，操作請自行判斷並設定停損')
+
+        return {
+            'code': code, 'name': name, 'price': price,
+            'total_score': total_score, 'tech_score': tech_score, 'chip_score': chip_score,
+            'short': {
+                'action':  short_action,
+                'note':    short_note,
+                'signals': short_signals,
+                'risks':   short_risks,
+            },
+            'mid': {
+                'action':  mid_action,
+                'note':    mid_note,
+                'signals': mid_signals,
+                'risks':   mid_risks,
+            },
+            'long': {
+                'action':  long_action,
+                'note':    long_note,
+                'signals': long_signals,
+                'risks':   long_risks,
+            },
+            'risk_warnings': risk_warnings,
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
 async def get_chart(code: str, token: str):
     import traceback
     try:
