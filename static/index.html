@@ -301,17 +301,19 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div id="dIntraday" style="display:none">
       <div id="intradayHeader" style="margin-bottom:8px">
         <div class="chart-legend">
-          <span><span class="dot-leg" style="background:#3b82f6"></span>分鐘收盤</span>
+          <span style="color:#e74c3c">■ 上漲</span>
+          <span style="color:#2ecc71">■ 下跌</span>
           <span><span class="dot-leg" style="background:#f39c12"></span>VWAP</span>
-          <span style="color:#e74c3c">■ 量增</span>
-          <span style="color:#2ecc71">■ 量縮</span>
         </div>
         <div class="chart-note" id="intradayDate"></div>
       </div>
       <div class="chart-container" id="intradayPriceEl"></div>
       <div style="height:10px"></div>
-      <div class="chart-note">成交量</div>
+      <div class="chart-note">成交量（深色=高於均量）</div>
       <div style="position:relative;width:100%;height:100px" id="intradayVolEl"></div>
+      <div style="font-size:11px;color:var(--text-3);margin-top:8px">
+        資料來源：Yahoo Finance 1分鐘線・收盤後即可取得・盤中每分鐘更新
+      </div>
     </div>
     <div id="dInfo" style="display:none">
       <div class="ind-grid" id="indGrid"></div>
@@ -733,56 +735,90 @@ function renderChart(tabId, d) {
 
 function renderIntraday(d) {
   const LWC = LightweightCharts;
-  const w = getChartWidth();
+  const w   = getChartWidth();
 
-  // 更新日期標籤
   const dateEl = document.getElementById('intradayDate');
-  if (dateEl) dateEl.textContent = d.date + ' 盤中走勢（分鐘線）' + (d.msg ? '　⚠️ ' + d.msg : '');
+  if (dateEl) dateEl.textContent = `${d.date} ${d.status || ''} — 1分鐘 K 線`;
 
-  if (!d.times || !d.times.length) return;
+  if (!d.times || !d.times.length) {
+    document.getElementById('intradayPriceEl').innerHTML =
+      '<div style="padding:40px;text-align:center;color:#888;font-size:13px">今日尚無分鐘資料（非交易日或盤前）</div>';
+    return;
+  }
 
-  // 使用索引作為 x 軸（避免 LightweightCharts 對時間格式的要求）
-  const mkTime = i => ({ day: 1, month: 1, year: 2000 + i });
+  // LightweightCharts 需要嚴格遞增的 time；用「分鐘數」當 Unix timestamp 避免日期解析問題
+  // 把 "HH:MM" 轉成從 09:00 起算的秒數（UTC 基準 + 固定偏移讓它看起來合理）
+  const BASE = 1700000000; // 固定基準，只要遞增即可
+  const toT  = (hhmm) => {
+    const [h, m] = hhmm.split(':').map(Number);
+    return BASE + h * 3600 + m * 60;
+  };
 
-  // 用數值索引轉成假日期（只是要讓圖表顯示，標籤用 formatter 改寫）
+  // 價格 K 線圖
   const priceEl = document.getElementById('intradayPriceEl');
   priceEl.style.width = w + 'px';
-
-  const priceOpts = {
-    ...makeChartOpts(w, 200),
+  const pOpts = {
+    ...makeChartOpts(w, 260),
     timeScale: {
       borderColor: '#e8e8e6',
-      tickMarkFormatter: (time) => {
-        const idx = time.year - 2000;
-        return d.times[idx] || '';
+      timeVisible: true,
+      tickMarkFormatter: (t) => {
+        const diff = t - BASE;
+        const h = Math.floor(diff / 3600);
+        const m = Math.floor((diff % 3600) / 60);
+        return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
       }
     }
   };
-  const pChart = LWC.createChart(priceEl, priceOpts);
+  const pChart = LWC.createChart(priceEl, pOpts);
 
-  // 分鐘收盤線
-  const priceLine = pChart.addLineSeries({ color: '#3b82f6', lineWidth: 1.5, priceLineVisible: false });
-  priceLine.setData(d.close.map((v, i) => v != null ? { time: mkTime(i), value: v } : null).filter(Boolean));
+  // K 線
+  const candle = pChart.addCandlestickSeries({
+    upColor: '#e74c3c', downColor: '#2ecc71',
+    borderUpColor: '#e74c3c', borderDownColor: '#2ecc71',
+    wickUpColor:   '#e74c3c', wickDownColor:   '#2ecc71',
+  });
+  const candleData = d.times.map((t, i) => ({
+    time:  toT(t),
+    open:  d.open[i]  || d.close[i],
+    high:  d.high[i]  || d.close[i],
+    low:   d.low[i]   || d.close[i],
+    close: d.close[i],
+  })).filter(x => x.close != null);
+  candle.setData(candleData);
 
-  // VWAP
-  if (d.vwap) {
-    const vwapLine = pChart.addLineSeries({ color: '#f39c12', lineWidth: 1.5, lineStyle: 1, priceLineVisible: false, lastValueVisible: false });
-    vwapLine.setData(d.vwap.map((v, i) => v != null ? { time: mkTime(i), value: v } : null).filter(Boolean));
+  // VWAP 線
+  if (d.vwap && d.vwap.length) {
+    const vwapLine = pChart.addLineSeries({
+      color: '#f39c12', lineWidth: 1.5, lineStyle: 0,
+      priceLineVisible: false, lastValueVisible: true, title: 'VWAP',
+    });
+    vwapLine.setData(
+      d.times.map((t, i) => d.vwap[i] != null ? { time: toT(t), value: d.vwap[i] } : null)
+             .filter(Boolean)
+    );
   }
   pChart.timeScale().fitContent();
   activeCharts.push(pChart);
 
-  // 成交量
+  // 成交量圖
   const volEl = document.getElementById('intradayVolEl');
   volEl.style.width = w + 'px';
-  const vOpts = { ...makeChartOpts(w, 100), timeScale: { visible: false } };
+  const vOpts = {
+    ...makeChartOpts(w, 100),
+    timeScale: { visible: false },
+  };
   const vChart = LWC.createChart(volEl, vOpts);
-  const volHist = vChart.addHistogramSeries({ priceFormat: { type: 'volume' } });
-  const avgVol = d.vol.filter(v => v).reduce((a, b) => a + b, 0) / (d.vol.filter(v => v).length || 1);
-  volHist.setData(d.vol.map((v, i) => v != null ? {
-    time: mkTime(i), value: v,
-    color: v >= avgVol ? 'rgba(231,76,60,0.7)' : 'rgba(46,204,113,0.5)'
-  } : null).filter(Boolean));
+  const volSeries = vChart.addHistogramSeries({ priceFormat: { type: 'volume' } });
+  const validVols = d.vol.filter(v => v > 0);
+  const avgVol = validVols.length ? validVols.reduce((a,b)=>a+b,0) / validVols.length : 1;
+  volSeries.setData(
+    d.times.map((t, i) => d.vol[i] != null ? {
+      time:  toT(t),
+      value: d.vol[i],
+      color: d.vol[i] >= avgVol ? 'rgba(231,76,60,0.75)' : 'rgba(120,120,120,0.4)',
+    } : null).filter(Boolean)
+  );
   vChart.timeScale().fitContent();
   activeCharts.push(vChart);
 }
