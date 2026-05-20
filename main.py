@@ -130,7 +130,7 @@ def fetch_finmind(stock_id, token, days=120):
 def fetch_institutional(stock_id, token, days=35):
     end   = datetime.today().strftime('%Y-%m-%d')
     start = (datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')
-    data  = finmind_get('TaiwanStockInstitutionalInvestors', stock_id, start, end, token)
+    data  = finmind_get('TaiwanStockInstitutionalInvestorsBuySell', stock_id, start, end, token)
     print(f"[inst] {stock_id} msg={data.get('msg')} count={len(data.get('data',[]))}")
     if not data.get('data'): return pd.DataFrame()
     df = pd.DataFrame(data['data'])
@@ -149,7 +149,7 @@ def fetch_institutional(stock_id, token, days=35):
 def fetch_margin(stock_id, token, days=35):
     end   = datetime.today().strftime('%Y-%m-%d')
     start = (datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')
-    data  = finmind_get('TaiwanStockMarginPurchaseShortsale', stock_id, start, end, token)
+    data  = finmind_get('TaiwanStockMarginPurchaseShortSale', stock_id, start, end, token)
     print(f"[margin] {stock_id} msg={data.get('msg')} count={len(data.get('data',[]))}")
     if not data.get('data'): return pd.DataFrame()
     df = pd.DataFrame(data['data'])
@@ -234,9 +234,9 @@ def calc_chip(inst_df, margin_df):
         col_map = {c.lower(): c for c in margin_df.columns}
         print(f"[chip] margin cols={list(col_map.keys())}")
 
-        # 融資餘額（多種可能的欄位名稱）
-        for try_col in ['marginpurchasetodaybalance','margin_purchase_today_balance',
-                         'marginpurchase_today_balance']:
+        # 融資餘額（官方欄位：MarginPurchaseTodayBalance）
+        for try_col in ['marginpurchasetodaybalance', 'marginpurchase_today_balance',
+                        'margin_purchase_today_balance']:
             orig = col_map.get(try_col)
             if orig:
                 mb = margin_df[orig]
@@ -246,9 +246,9 @@ def calc_chip(inst_df, margin_df):
                 print(f"[chip] margin_balance={r['margin_balance']} change5d={r['margin_change_5d']}")
                 break
 
-        # 融券餘額
-        for try_col in ['shortsaletodaybalance','short_sale_today_balance',
-                         'shortsale_today_balance']:
+        # 融券餘額（官方欄位：ShortSaleTodayBalance）
+        for try_col in ['shortsaletodaybalance', 'short_sale_today_balance',
+                        'shortsale_today_balance']:
             orig = col_map.get(try_col)
             if orig:
                 sb = margin_df[orig]
