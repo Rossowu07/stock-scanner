@@ -1049,34 +1049,62 @@ async function loadFundamentalTab(code) {
 }
 
 function renderFundamentalTab(d, container) {
-  const fmt  = v => v == null ? '—' : v.toLocaleString();
-  const fmtM = v => v == null ? '—' : (Math.abs(v) >= 1e8 ? (v/1e8).toFixed(1)+'億' : Math.abs(v) >= 1e4 ? (v/1e4).toFixed(0)+'萬' : v.toLocaleString());
-  const pct  = v => v == null ? '—' : (v > 0 ? `<span style="color:var(--green)">+${v}%</span>` : `<span style="color:var(--red)">${v}%</span>`);
-  const clr  = v => v == null ? '' : v > 0 ? 'color:var(--green);font-weight:600' : v < 0 ? 'color:var(--red);font-weight:600' : '';
+  const fmtM = v => {
+    if (v == null || v === 0) return '—';
+    const n = Number(v);
+    if (Math.abs(n) >= 1e8) return (n/1e8).toFixed(2) + ' 億';
+    if (Math.abs(n) >= 1e4) return (n/1e4).toFixed(0) + ' 萬';
+    return n.toLocaleString();
+  };
+  const clr = v => v == null ? '' : v > 0 ? 'color:var(--green);font-weight:600' : v < 0 ? 'color:var(--red);font-weight:600' : '';
+  const signStr = v => v == null ? '—' : (v > 0 ? `+${v}` : `${v}`);
 
   let html = '';
 
-  // ── PER / PBR ──────────────────────────────────────
+  // ── 重要日程 ─────────────────────────────────────────
+  if (d.calendar && d.calendar.length) {
+    html += `<div class="fund-section">
+      <div class="fund-title">📅 近期重要日程</div>
+      ${d.calendar.map(c => {
+        const isPast = c.days < 0;
+        const isSoon = c.days >= 0 && c.days <= 14;
+        const icon   = c.type === 'exdiv' ? '💰' : '📊';
+        const bg     = isPast ? '' : isSoon
+          ? 'background:#fff8f0;border-color:#e67e22;'
+          : 'background:#f0faf4;border-color:var(--green);';
+        const statusColor = isPast ? 'color:var(--text-3)' : isSoon ? 'color:#e67e22' : 'color:var(--green)';
+        return `<div style="border:1px solid var(--border-light);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:6px;${bg}display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-size:13px;font-weight:500">${icon} ${c.label}</div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:2px">${c.date}</div>
+          </div>
+          <div style="font-size:12px;font-weight:600;${statusColor}">${c.status}</div>
+        </div>`;
+      }).join('')}
+      <div class="fund-hint">⚠️ 財報公布前後2週股價波動較大，短線操作需特別留意。法說會日期請參考公司 IR 網頁或公開資訊觀測站。</div>
+    </div>`;
+  }
+
+  // ── PER / PBR / 殖利率 ──────────────────────────────
   if (d.per_pbr && d.per_pbr.per) {
     const p = d.per_pbr;
-    html += `
-    <div class="fund-section">
-      <div class="fund-title">本益比 / 股價淨值比 <span class="fund-date">${p.date}</span></div>
+    html += `<div class="fund-section">
+      <div class="fund-title">估值指標 <span class="fund-date">${p.date}</span></div>
       <div class="fund-grid3">
         <div class="fund-card">
           <div class="fund-lbl">本益比 PER</div>
-          <div class="fund-val">${p.per}x</div>
-          <div class="fund-hint">${p.per < 15 ? '✅ 偏低，估值合理' : p.per < 25 ? '➡️ 中等水位' : '⚠️ 偏高，注意風險'}</div>
+          <div class="fund-val">${p.per > 0 ? p.per + 'x' : '—'}</div>
+          <div class="fund-hint">${p.per > 0 && p.per < 15 ? '✅ 偏低，估值合理' : p.per < 25 ? '➡️ 中等水位' : p.per >= 25 ? '⚠️ 偏高，回調空間大' : '—'}</div>
         </div>
         <div class="fund-card">
           <div class="fund-lbl">股價淨值比 PBR</div>
-          <div class="fund-val">${p.pbr}x</div>
-          <div class="fund-hint">${p.pbr < 1.5 ? '✅ 低於帳面價值，偏便宜' : p.pbr < 3 ? '➡️ 合理範圍' : '⚠️ 偏高'}</div>
+          <div class="fund-val">${p.pbr > 0 ? p.pbr + 'x' : '—'}</div>
+          <div class="fund-hint">${p.pbr > 0 && p.pbr < 1.5 ? '✅ 低於帳面，偏便宜' : p.pbr < 3 ? '➡️ 合理範圍' : p.pbr >= 3 ? '⚠️ 偏高' : '—'}</div>
         </div>
         <div class="fund-card">
           <div class="fund-lbl">殖利率</div>
-          <div class="fund-val">${p.dividend_yield}%</div>
-          <div class="fund-hint">${p.dividend_yield >= 4 ? '✅ 高殖利率，配息穩健' : p.dividend_yield >= 2 ? '➡️ 殖利率正常' : '⬜ 殖利率偏低'}</div>
+          <div class="fund-val">${p.dividend_yield > 0 ? p.dividend_yield + '%' : '—'}</div>
+          <div class="fund-hint">${p.dividend_yield >= 5 ? '✅ 高殖利率，下檔支撐強' : p.dividend_yield >= 3 ? '📈 殖利率正常' : p.dividend_yield > 0 ? '⬜ 殖利率偏低' : '尚無配息記錄'}</div>
         </div>
       </div>
     </div>`;
@@ -1087,44 +1115,45 @@ function renderFundamentalTab(d, container) {
     const latest = d.revenue[d.revenue.length - 1];
     const prev3  = d.revenue.slice(-4, -1);
     const avgYoy = prev3.length ? (prev3.reduce((a,b)=>a+b.yoy,0)/prev3.length).toFixed(1) : null;
-    html += `
-    <div class="fund-section">
+    html += `<div class="fund-section">
       <div class="fund-title">月營收 <span class="fund-date">最新：${latest.date}</span></div>
       <div class="fund-grid2">
         <div class="fund-card">
           <div class="fund-lbl">最新月營收</div>
           <div class="fund-val">${fmtM(latest.revenue)}</div>
-          <div class="fund-row"><span class="fund-lbl">月增率</span><span style="${clr(latest.mom)}">${latest.mom > 0 ? '+':''}${latest.mom}%</span></div>
-          <div class="fund-row"><span class="fund-lbl">年增率</span><span style="${clr(latest.yoy)}">${latest.yoy > 0 ? '+':''}${latest.yoy}%</span></div>
+          <div class="fund-row"><span class="fund-lbl">月增率 MoM</span><span style="${clr(latest.mom)}">${signStr(latest.mom)}%</span></div>
+          <div class="fund-row"><span class="fund-lbl">年增率 YoY</span><span style="${clr(latest.yoy)}">${signStr(latest.yoy)}%</span></div>
           <div class="fund-hint">${
             latest.yoy >= 20 ? '✅ 營收高速成長，基本面強勁' :
             latest.yoy >= 5  ? '📈 營收穩健成長' :
-            latest.yoy >= 0  ? '➡️ 營收持平' :
-                               '⚠️ 營收衰退，注意基本面風險'
+            latest.yoy >= 0  ? '➡️ 營收持平' : '⚠️ 營收年減，基本面需觀察'
           }</div>
         </div>
         <div class="fund-card">
           <div class="fund-lbl">近3個月平均年增率</div>
-          <div class="fund-val" style="${clr(parseFloat(avgYoy))}">${avgYoy != null ? (avgYoy > 0 ? '+':'') + avgYoy + '%' : '—'}</div>
-          <div class="fund-lbl" style="margin-top:10px">近期月營收趨勢</div>
-          <div style="margin-top:6px">
-            ${d.revenue.slice(-6).map(r => `
-              <div class="fund-rev-row">
-                <span class="fund-lbl">${r.date.slice(0,7)}</span>
-                <span style="font-size:12px;font-variant-numeric:tabular-nums">${fmtM(r.revenue)}</span>
-                <span style="font-size:11px;${clr(r.yoy)};margin-left:4px">${r.yoy > 0?'+':''}${r.yoy}%</span>
-              </div>`).join('')}
+          <div class="fund-val" style="${clr(parseFloat(avgYoy))}">${avgYoy != null ? signStr(avgYoy)+'%' : '—'}</div>
+          <div style="margin-top:10px">${d.revenue.slice(-6).map(r=>`
+            <div class="fund-rev-row">
+              <span class="fund-lbl">${r.date.slice(0,7)}</span>
+              <span style="font-size:12px">${fmtM(r.revenue)}</span>
+              <span style="font-size:11px;${clr(r.yoy)};margin-left:4px">${signStr(r.yoy)}%</span>
+            </div>`).join('')}
           </div>
         </div>
       </div>
     </div>`;
   }
 
-  // ── 財務指標（EPS / 營益率） ─────────────────────────
+  // ── 財務指標 ─────────────────────────────────────────
   if (d.financial && d.financial.length) {
     const rows = d.financial.slice(-6).reverse();
-    html += `
-    <div class="fund-section">
+    const eps_list = rows.map(r=>r.eps).filter(v=>v!=null);
+    const eps_trend = eps_list.length >= 2
+      ? (eps_list[0] > eps_list[1] ? '✅ EPS 季增，獲利改善，支撐短線操作信心'
+       : eps_list[0] === eps_list[1] ? '➡️ EPS 持平'
+       : '⚠️ EPS 季減，注意獲利動能是否持續')
+      : '';
+    html += `<div class="fund-section">
       <div class="fund-title">財務指標（季報）</div>
       <div style="overflow-x:auto">
         <table class="fund-table">
@@ -1132,63 +1161,82 @@ function renderFundamentalTab(d, container) {
             <th>期別</th><th style="text-align:right">EPS</th>
             <th style="text-align:right">營益率</th><th style="text-align:right">淨利率</th>
           </tr></thead>
-          <tbody>
-            ${rows.map(r => `<tr>
-              <td>${r.date}</td>
-              <td style="text-align:right;${clr(r.eps)}">${r.eps != null ? r.eps : '—'}</td>
-              <td style="text-align:right;${clr(r.op_margin)}">${r.op_margin != null ? r.op_margin+'%' : '—'}</td>
-              <td style="text-align:right;${clr(r.net_margin)}">${r.net_margin != null ? r.net_margin+'%' : '—'}</td>
-            </tr>`).join('')}
-          </tbody>
+          <tbody>${rows.map(r=>`<tr>
+            <td>${r.date}</td>
+            <td style="text-align:right;${clr(r.eps)}">${r.eps != null ? r.eps : '—'}</td>
+            <td style="text-align:right;${clr(r.op_margin)}">${r.op_margin != null ? r.op_margin+'%' : '—'}</td>
+            <td style="text-align:right;${clr(r.net_margin)}">${r.net_margin != null ? r.net_margin+'%' : '—'}</td>
+          </tr>`).join('')}</tbody>
         </table>
       </div>
-      <div class="fund-hint" style="margin-top:8px">${(() => {
-        const eps_vals = rows.map(r=>r.eps).filter(v=>v!=null);
-        if (eps_vals.length < 2) return '';
-        const latest_eps = eps_vals[0], prev_eps = eps_vals[1];
-        if (latest_eps > 0 && latest_eps > prev_eps) return '✅ EPS 季增，獲利持續改善，基本面支撐短線操作';
-        if (latest_eps > 0) return '📈 EPS 正值，公司獲利中';
-        return '⚠️ EPS 下滑或虧損，短線操作需謹慎';
-      })()}</div>
+      ${eps_trend ? `<div class="fund-hint" style="margin-top:8px">${eps_trend}</div>` : ''}
     </div>`;
   }
 
   // ── 股利政策 ─────────────────────────────────────────
   if (d.dividend && d.dividend.length) {
-    html += `
-    <div class="fund-section">
-      <div class="fund-title">近期股利政策</div>
+    const divArr = d.dividend.slice().reverse();
+    const cashArr = divArr.map(r=>r.cash).filter(v=>v>0);
+    const avgDiv = cashArr.length ? (cashArr.reduce((a,b)=>a+b,0)/cashArr.length).toFixed(2) : '—';
+    html += `<div class="fund-section">
+      <div class="fund-title">股利政策（近5年）</div>
       <div style="overflow-x:auto">
         <table class="fund-table">
           <thead><tr>
             <th>年度</th><th style="text-align:right">現金股利</th>
             <th style="text-align:right">股票股利</th><th style="text-align:right">合計</th>
           </tr></thead>
-          <tbody>
-            ${d.dividend.slice().reverse().map(r => `<tr>
-              <td>${r.date.slice(0,4)}</td>
-              <td style="text-align:right">${r.cash > 0 ? r.cash : '—'}</td>
-              <td style="text-align:right">${r.stock > 0 ? r.stock : '—'}</td>
-              <td style="text-align:right;font-weight:600">${r.total > 0 ? r.total : '—'}</td>
-            </tr>`).join('')}
-          </tbody>
+          <tbody>${divArr.map(r=>`<tr>
+            <td>${r.date.slice(0,4)}</td>
+            <td style="text-align:right;color:var(--green)">${r.cash > 0 ? r.cash : '—'}</td>
+            <td style="text-align:right">${r.stock > 0 ? r.stock : '—'}</td>
+            <td style="text-align:right;font-weight:600">${r.total > 0 ? r.total : '—'}</td>
+          </tr>`).join('')}</tbody>
         </table>
       </div>
+      <div class="fund-hint" style="margin-top:6px">近5年平均現金股利：${avgDiv} 元</div>
+    </div>`;
+  }
+
+  // ── 除權除息結果（含填息率）────────────────────────────
+  if (d.ex_dividend && d.ex_dividend.length) {
+    html += `<div class="fund-section">
+      <div class="fund-title">除權除息結果（近期）</div>
+      <div style="overflow-x:auto">
+        <table class="fund-table">
+          <thead><tr>
+            <th>除息日</th><th style="text-align:right">現金股利</th>
+            <th style="text-align:right">股票股利</th><th style="text-align:right">填息率</th>
+          </tr></thead>
+          <tbody>${d.ex_dividend.slice().reverse().map(r=>`<tr>
+            <td>${r.date}</td>
+            <td style="text-align:right">${r.cash_div > 0 ? r.cash_div : '—'}</td>
+            <td style="text-align:right">${r.stock_div > 0 ? r.stock_div : '—'}</td>
+            <td style="text-align:right;${r.fill_pct >= 100 ? 'color:var(--green);font-weight:600' : r.fill_pct > 0 ? 'color:#e67e22' : 'color:var(--red)'}">
+              ${r.fill_pct > 0 ? r.fill_pct + '%' : '未填息'}
+            </td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+      <div class="fund-hint" style="margin-top:6px">填息率 100% = 除息後已完整回補缺口。歷史填息能力強 = 除息後短線支撐較佳，有助維持股價。</div>
     </div>`;
   }
 
   if (!html) {
-    html = '<div style="padding:20px;color:#888;font-size:13px">⚠️ 基本面資料暫無，可能為新上市股票或資料尚未更新</div>';
+    html = '<div style="padding:20px;color:#888;font-size:13px">⚠️ 基本面資料暫無（可能為新上市股票或資料尚未更新）</div>';
   }
 
-  // 短線參考說明
-  html += `<div style="padding:10px 0;font-size:11px;color:var(--text-3);line-height:1.6;margin-top:4px">
-    📌 短線參考重點：月營收年增率持續擴大 + EPS 季增 = 基本面支撐強，技術面突破可信度提高。
-    本益比偏高時，即使技術面訊號好，回調空間也較大。
+  html += `<div style="padding:10px 0 4px;font-size:11px;color:var(--text-3);line-height:1.7">
+    📌 <strong>短線操作基本面要點</strong><br>
+    ① 財報截止日前後2週波動大，建議避開重押<br>
+    ② 月營收連3個月年增率擴大 = 基本面支撐突破訊號可信度提高<br>
+    ③ EPS 季增 + 外資買超 = 技術面與基本面共振，短線操作勝率提升<br>
+    ④ 高殖利率股票除息前常有買盤，除息後注意填息能力
   </div>`;
 
   container.innerHTML = html;
 }
+
 
 async function loadChipTab(code) {
   const content = document.getElementById('chipContent');
@@ -1359,12 +1407,21 @@ async function loadStrategy() {
   btn.disabled = true;
   btn.textContent = '分析中...';
   const content = document.getElementById('strategyContent');
-  content.innerHTML = '<div style="padding:30px;text-align:center;color:#888;font-size:13px">正在綜合技術面與籌碼面資料...</div>';
+  content.innerHTML = '<div style="padding:30px;text-align:center;color:#888;font-size:13px">正在綜合技術面、籌碼面、基本面資料...</div>';
+  const token = document.getElementById('tokenInput').value.trim();
+
+  // 同時抓取最新基本面（若已有快取則不重抓）
+  let fundData = null;
+  try {
+    const resp = await fetch(`/api/fundamental/${r.code}?token=${encodeURIComponent(token)}`);
+    if (resp.ok) fundData = await resp.json();
+  } catch(e) { /* 靜默，不影響策略產生 */ }
+
   try {
     const resp = await fetch('/api/strategy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stock: r })
+      body: JSON.stringify({ stock: r, fundamental: fundData })
     });
     if (!resp.ok) throw new Error('API 錯誤 ' + resp.status);
     const d = await resp.json();
