@@ -103,7 +103,7 @@ def finmind_get(dataset, stock_id, start, end, token):
         f"&end_date={end}"
         f"&token={safe_token}"
     )
-    print(f"[finmind] GET dataset={dataset} data_id={stock_id} start={start} end={end}")
+    print(f"[finmind] GET dataset={dataset} data_id={stock_id} start={start} end={end} token_len={len(token)}")
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -324,6 +324,7 @@ async def root(): return FileResponse("static/index.html")
 @app.get("/api/verify")
 async def verify_token(token: str):
     try:
+        print(f"[verify] token_len={len(token)} token_preview={token[:20]}...{token[-10:]}")
         end   = datetime.today().strftime('%Y-%m-%d')
         start = (datetime.today() - timedelta(days=5)).strftime('%Y-%m-%d')
         data  = finmind_get('TaiwanStockPrice', '2330', start, end, token)
