@@ -91,7 +91,8 @@ class StrategyRequest(BaseModel):
 
 # ── FinMind 資料抓取 ──────────────────────────────────────
 def finmind_get(dataset, stock_id, start, end, token):
-    """統一的 FinMind API 呼叫，確保參數名稱正確"""
+    """統一的 FinMind API 呼叫，用 urllib 避免 requests 重新編碼 URL"""
+    import urllib.request, urllib.error
     url = (
         f"https://api.finmindtrade.com/api/v4/data"
         f"?dataset={dataset}"
@@ -100,9 +101,15 @@ def finmind_get(dataset, stock_id, start, end, token):
         f"&end_date={end}"
         f"&token={token}"
     )
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
+    print(f"[finmind] GET {url[:120]}...")
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            import json as _json
+            return _json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='ignore')
+        raise Exception(f"HTTP {e.code}: {body[:200]}")
 
 def fetch_finmind(stock_id, token, days=120):
     end   = datetime.today().strftime('%Y-%m-%d')
