@@ -135,7 +135,25 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .ind-val { font-size: 15px; font-weight: 600; }
 .ind-desc { font-size: 11px; color: var(--text-3); margin-top: 2px; }
 
-/* 籌碼面卡片 */
+/* 籌碼面頁籤專用樣式 */
+.chip-section-title { font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border-light); }
+.chip-grid-wide { display:flex;flex-direction:column;gap:8px; }
+.chip-card-wide { border:1px solid var(--border-light);border-radius:var(--radius-sm);padding:12px 14px; }
+.chip-card-wide.positive { border-color:var(--green);background:var(--green-light); }
+.chip-card-wide.negative { border-color:#e67e22;background:#fff8f0; }
+.chip-card-header { display:flex;justify-content:space-between;align-items:center;margin-bottom:8px; }
+.chip-card-name { font-size:13px;font-weight:600; }
+.chip-score-badge { font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px; }
+.chip-score-badge.good { background:var(--green-light);color:var(--green); }
+.chip-score-badge.bad  { background:var(--red-light);color:var(--red); }
+.chip-row { display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:4px;flex-wrap:wrap; }
+.chip-lbl { font-size:11px;color:var(--text-3);white-space:nowrap; }
+.chip-interpret { font-size:12px;color:var(--text-2);margin-top:6px;line-height:1.5;padding-top:6px;border-top:1px solid rgba(0,0,0,0.06); }
+.chip-val-up   { font-weight:600;color:var(--green); }
+.chip-val-dn   { font-weight:600;color:var(--red); }
+.chip-val-zero { font-weight:600;color:#888; }
+
+/* 籌碼面卡片（小版） */
 .chip-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-top: 12px; }
 .chip-card { border:1px solid var(--border-light); border-radius:var(--radius-sm); padding:10px 12px; }
 .chip-card.positive { border-color:var(--green); background:var(--green-light); }
@@ -264,6 +282,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div class="dtab" onclick="switchDTab('rsi',this)">RSI</div>
     <div class="dtab" onclick="switchDTab('bb',this)">布林通道</div>
     <div class="dtab" onclick="switchDTab('intraday',this)">盤中走勢</div>
+    <div class="dtab" onclick="switchDTab('chip',this)">📊 籌碼面</div>
     <div class="dtab" onclick="switchDTab('info',this)">指標摘要</div>
     <div class="dtab" onclick="switchDTab('strategy',this)">📋 操作建議</div>
   </div>
@@ -314,6 +333,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
       <div style="font-size:11px;color:var(--text-3);margin-top:8px">
         資料來源：Yahoo Finance 1分鐘線・收盤後即可取得・盤中每分鐘更新
       </div>
+    </div>
+    <div id="dChip" style="display:none">
+      <div id="chipContent"><div style="padding:30px;text-align:center;color:#888;font-size:13px">載入籌碼資料中...</div></div>
     </div>
     <div id="dInfo" style="display:none">
       <div class="ind-grid" id="indGrid"></div>
@@ -524,7 +546,11 @@ async function openDrawer(code, name) {
 
   destroyCharts();
   await new Promise(res => setTimeout(res, 350));
-  await loadAndRender(code, currentDTab);
+  if (currentDTab === 'chip') {
+    await loadChipTab(code);
+  } else {
+    await loadAndRender(code, currentDTab);
+  }
   if (r) buildIndGrid(r);
 }
 
@@ -538,16 +564,20 @@ function closeDrawer() {
 
 async function switchDTab(tabId, btn) {
   currentDTab = tabId;
-  const allTabs = ['candle','vol','macd','rsi','bb','intraday','info','strategy'];
+  const allTabs = ['candle','vol','macd','rsi','bb','intraday','chip','info','strategy'];
   allTabs.forEach(t => {
     const el = document.getElementById('d' + t.charAt(0).toUpperCase() + t.slice(1));
     if (el) el.style.display = t === tabId ? 'block' : 'none';
   });
   document.querySelectorAll('.dtab').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  if (currentStock && tabId !== 'info') {
-    destroyCharts();
-    await loadAndRender(currentStock, tabId);
+  if (currentStock) {
+    if (tabId === 'chip') {
+      await loadChipTab(currentStock);
+    } else if (tabId !== 'info' && tabId !== 'strategy') {
+      destroyCharts();
+      await loadAndRender(currentStock, tabId);
+    }
   }
 }
 
@@ -932,6 +962,168 @@ function buildIndGrid(r) {
   }
 
   document.getElementById('indGrid').innerHTML = regularCards + bbCard + chipSection;
+}
+
+async function loadChipTab(code) {
+  const content = document.getElementById('chipContent');
+  // 先用掃描時已取得的資料渲染
+  const r = allResults.find(x => x.code === code);
+  if (r) renderChipTab(r, content);
+  // 再重新抓最新籌碼資料更新
+  const token = document.getElementById('tokenInput').value.trim();
+  try {
+    const resp = await fetch(`/api/chip/${code}?token=${encodeURIComponent(token)}`);
+    if (!resp.ok) throw new Error('API 回應 ' + resp.status);
+    const chip = await resp.json();
+    // 合併最新籌碼進 r 並重新渲染
+    const merged = Object.assign({}, r, chip);
+    renderChipTab(merged, content);
+  } catch(e) {
+    // 靜默失敗，保留掃描時的資料
+    console.warn('[chip] 更新失敗:', e.message);
+  }
+}
+
+function renderChipTab(r, container) {
+  const fmt  = v => v > 0 ? `+${Number(v).toLocaleString()}` : Number(v).toLocaleString();
+  const fmtK = v => {
+    const n = Number(v);
+    if (Math.abs(n) >= 10000) return (n/10000).toFixed(1) + '萬';
+    return n.toLocaleString();
+  };
+
+  if (!r.chip_available) {
+    container.innerHTML = `
+      <div style="padding:20px;background:var(--yellow-light);border-radius:var(--radius-sm);font-size:13px;color:var(--yellow-text)">
+        ⚠️ 籌碼資料未能取得。可能原因：非交易日、FinMind API 請求次數已達上限，或該股票近期無三大法人資料。<br><br>
+        <span style="font-size:12px">免費帳號每小時限制 600 次請求，掃描多檔股票時可能超限。</span>
+      </div>`;
+    return;
+  }
+
+  const fCls   = r.foreign_5d  > 0 ? 'positive' : r.foreign_5d  < 0 ? 'negative' : '';
+  const tCls   = r.trust_5d    > 0 ? 'positive' : r.trust_5d    < 0 ? 'negative' : '';
+  const dCls   = r.dealer_5d   > 0 ? 'positive' : r.dealer_5d   < 0 ? 'negative' : '';
+  const mCls   = r.margin_safe ? 'positive' : 'negative';
+  const upDn   = v => `<span class="${v>0?'chip-val-up':v<0?'chip-val-dn':'chip-val-zero'}">${fmt(v)} 張</span>`;
+
+  container.innerHTML = `
+    <!-- 三大法人區塊 -->
+    <div class="chip-section-title">三大法人買賣超</div>
+    <div class="chip-grid-wide">
+
+      <div class="chip-card-wide ${fCls}">
+        <div class="chip-card-header">
+          <span class="chip-card-name">🌏 外資</span>
+          <span class="chip-score-badge ${r.foreign_buying?'good':'bad'}">${r.foreign_buying?'買超':'賣超'}</span>
+        </div>
+        <div class="chip-row">
+          <span class="chip-lbl">今日</span>${upDn(r.foreign_today)}
+        </div>
+        <div class="chip-row">
+          <span class="chip-lbl">近5日</span>${upDn(r.foreign_5d)}
+          <span class="chip-lbl" style="margin-left:12px">近20日</span>${upDn(r.foreign_20d)}
+        </div>
+        <div class="chip-interpret">${
+          r.foreign_20d > 0
+            ? `✅ 外資近20日持續買進，法人看多訊號明確`
+            : r.foreign_5d > 0
+              ? `⚠️ 外資近5日買進，但20日仍賣超，觀察持續性`
+              : `❌ 外資持續賣出，法人偏空，中線需謹慎`
+        }</div>
+      </div>
+
+      <div class="chip-card-wide ${tCls}">
+        <div class="chip-card-header">
+          <span class="chip-card-name">🏦 投信</span>
+          <span class="chip-score-badge ${r.trust_buying?'good':'bad'}">${r.trust_buying?'買超':'賣超'}</span>
+        </div>
+        <div class="chip-row">
+          <span class="chip-lbl">今日</span>${upDn(r.trust_today)}
+        </div>
+        <div class="chip-row">
+          <span class="chip-lbl">近5日</span>${upDn(r.trust_5d)}
+          <span class="chip-lbl" style="margin-left:12px">近20日</span>${upDn(r.trust_20d)}
+        </div>
+        <div class="chip-interpret">${
+          r.trust_5d > 0 && r.foreign_5d > 0
+            ? `✅ 外資+投信同步買進，籌碼共振，訊號最強`
+            : r.trust_5d > 0
+              ? `📈 投信持續佈局，機構資金進場中`
+              : `⬜ 投信近期賣超，法人信心不足`
+        }</div>
+      </div>
+
+      <div class="chip-card-wide ${dCls}">
+        <div class="chip-card-header">
+          <span class="chip-card-name">🏢 自營商</span>
+          <span class="chip-score-badge ${r.dealer_5d>0?'good':'bad'}">${r.dealer_5d>0?'買超':'賣超'}</span>
+        </div>
+        <div class="chip-row">
+          <span class="chip-lbl">今日</span>${upDn(r.dealer_today)}
+        </div>
+        <div class="chip-row">
+          <span class="chip-lbl">近5日</span>${upDn(r.dealer_5d)}
+        </div>
+        <div class="chip-row">
+          <span class="chip-lbl">三大合計5日</span>${upDn(r.inst_total_5d)}
+          <span class="chip-lbl" style="margin-left:12px">20日</span>${upDn(r.inst_total_20d)}
+        </div>
+        <div class="chip-interpret">${
+          r.inst_total_5d > 0
+            ? `✅ 三大法人合計近5日淨買超，整體籌碼偏多`
+            : `❌ 三大法人合計近5日淨賣超，整體籌碼偏空`
+        }</div>
+      </div>
+
+    </div>
+
+    <!-- 融資融券區塊 -->
+    <div class="chip-section-title" style="margin-top:16px">融資融券</div>
+    <div class="chip-grid">
+      <div class="chip-card ${mCls}">
+        <div class="chip-card-header">
+          <span class="chip-card-name">💳 融資餘額</span>
+          <span class="chip-score-badge ${r.margin_safe?'good':'bad'}">${r.margin_safe?'健康':'注意'}</span>
+        </div>
+        <div class="chip-row"><span class="chip-lbl">餘額</span><span style="font-weight:600">${fmtK(r.margin_balance)} 張</span></div>
+        <div class="chip-row"><span class="chip-lbl">近5日變化</span>${upDn(r.margin_change_5d)}</div>
+        <div class="chip-interpret">${
+          r.margin_change_5d < 0
+            ? `✅ 融資減少，散戶降低槓桿，籌碼趨於健康`
+            : r.margin_change_5d === 0
+              ? `➡️ 融資持平，市場觀望`
+              : `⚠️ 融資增加 ${fmtK(r.margin_change_5d)} 張，散戶追高風險，注意籌碼穩定性`
+        }</div>
+      </div>
+      <div class="chip-card">
+        <div class="chip-card-header">
+          <span class="chip-card-name">📉 融券餘額</span>
+        </div>
+        <div class="chip-row"><span class="chip-lbl">餘額</span><span style="font-weight:600">${fmtK(r.short_balance)} 張</span></div>
+        <div class="chip-row"><span class="chip-lbl">近5日變化</span>${upDn(r.short_change_5d)}</div>
+        <div class="chip-interpret">${
+          r.short_change_5d > 0
+            ? `⚠️ 融券增加，空頭放空力道增強，留意壓力`
+            : r.short_balance > 0
+              ? `📈 融券減少，空頭回補可能推升股價`
+              : `➡️ 融券變化不大`
+        }</div>
+      </div>
+    </div>
+
+    <!-- 籌碼評分 -->
+    <div style="margin-top:16px;padding:12px 14px;background:var(--bg);border-radius:var(--radius-sm)">
+      <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:6px">籌碼評分 ${r.chip_score}/3</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <span class="score-pill ${r.foreign_buying?'chip':''}">外資買超 ${r.foreign_buying?'✅':'❌'}</span>
+        <span class="score-pill ${r.trust_buying?'chip':''}">投信買超 ${r.trust_buying?'✅':'❌'}</span>
+        <span class="score-pill ${r.margin_safe?'chip':''}">融資健康 ${r.margin_safe?'✅':'❌'}</span>
+      </div>
+      <div style="font-size:11px;color:var(--text-3);margin-top:8px">
+        籌碼面 ${r.chip_score}/3 + 技術面 ${r.score}/5 = 綜合評分 <strong>${r.total_score}/8</strong>
+      </div>
+    </div>`;
 }
 
 async function loadStrategy() {
