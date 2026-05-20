@@ -391,6 +391,18 @@ async def get_chart(code: str, token: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
+@app.get("/api/chip/{code}")
+async def get_chip(code: str, token: str):
+    """獨立抓取最新籌碼資料（三大法人 + 融資融券）"""
+    try:
+        inst_df   = fetch_institutional(code, token, days=35)
+        margin_df = fetch_margin(code, token, days=35)
+        chip      = calc_chip(inst_df, margin_df)
+        return chip
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
 @app.get("/api/intraday/{code}")
 async def get_intraday(code: str, token: str):
     try:
