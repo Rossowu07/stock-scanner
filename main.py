@@ -115,11 +115,23 @@ def fetch_institutional(stock_id, token, days=35):
                 'start_date':start,'end_date':end,'token':token}, timeout=15)
     resp.raise_for_status()
     data = resp.json()
+    print(f"[inst] {stock_id} msg={data.get('msg')} count={len(data.get('data',[]))}")
     if not data.get('data'): return pd.DataFrame()
     df = pd.DataFrame(data['data'])
-    df['buy']  = pd.to_numeric(df.get('buy',  pd.Series(dtype=float)), errors='coerce').fillna(0)
-    df['sell'] = pd.to_numeric(df.get('sell', pd.Series(dtype=float)), errors='coerce').fillna(0)
-    df['net']  = df['buy'] - df['sell']
+    print(f"[inst] {stock_id} cols={df.columns.tolist()}")
+
+    # 欄位名稱全部轉小寫，統一處理
+    df.columns = [c.lower() for c in df.columns]
+
+    if 'name' in df.columns:
+        print(f"[inst] {stock_id} names={df['name'].unique().tolist()}")
+
+    for col in ['buy','sell']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        else:
+            df[col] = 0.0
+    df['net'] = df['buy'] - df['sell']
     return df.sort_values('date').reset_index(drop=True)
 
 def fetch_margin(stock_id, token, days=35):
@@ -130,10 +142,13 @@ def fetch_margin(stock_id, token, days=35):
                 'start_date':start,'end_date':end,'token':token}, timeout=15)
     resp.raise_for_status()
     data = resp.json()
+    print(f"[margin] {stock_id} msg={data.get('msg')} count={len(data.get('data',[]))}")
     if not data.get('data'): return pd.DataFrame()
     df = pd.DataFrame(data['data'])
-    for col in ['MarginPurchaseTodayBalance','ShortSaleTodayBalance']:
-        if col in df.columns:
+    print(f"[margin] {stock_id} cols={df.columns.tolist()}")
+    # 所有非日期/代號欄位轉數值
+    for col in df.columns:
+        if col not in ['date','stock_id']:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     return df.sort_values('date').reset_index(drop=True)
 
@@ -165,46 +180,60 @@ def calc_chip(inst_df, margin_df):
         'trust_buying':False,'margin_safe':False,
         'chip_score':0,'chip_available':False,
     }
+
+    # ── 三大法人 ──────────────────────────────────────────
     if not inst_df.empty and 'name' in inst_df.columns:
         r['chip_available'] = True
-        for name_key, prefix in [('外資','foreign'),('外資自營商','foreign'),('投信','trust'),('自營商','dealer')]:
-            sub = inst_df[inst_df['name'] == name_key]
-            if sub.empty: continue
-            net = sub['net']
-            if prefix == 'foreign':
+        # 名稱對應表（FinMind 可能用不同字串）
+        FOREIGN_NAMES = {'外資','外資及陸資','外資自營商','foreign','Foreign'}
+        TRUST_NAMES   = {'投信','investment trust','Trust'}
+        DEALER_NAMES  = {'自營商','dealer','Dealer','自營商(自行買賣)','自營商(避險)'}
+
+        for _, grp in inst_df.groupby('name'):
+            n = grp['name'].iloc[0]
+            net = grp['net']
+            if n in FOREIGN_NAMES:
                 r['foreign_today'] = safe_float(net.iloc[-1], 0)
                 r['foreign_5d']    = safe_float(net.tail(5).sum(), 0)
                 r['foreign_20d']   = safe_float(net.tail(20).sum(), 0)
-            elif prefix == 'trust':
+            elif n in TRUST_NAMES:
                 r['trust_today']   = safe_float(net.iloc[-1], 0)
                 r['trust_5d']      = safe_float(net.tail(5).sum(), 0)
                 r['trust_20d']     = safe_float(net.tail(20).sum(), 0)
-            elif prefix == 'dealer':
+            elif n in DEALER_NAMES:
                 r['dealer_today']  = safe_float(net.iloc[-1], 0)
-                r['dealer_5d']     = safe_float(net.tail(5).sum(), 0)
-        dates  = inst_df['date'].unique()
-        totals = [inst_df[inst_df['date']==d]['net'].sum() for d in sorted(dates)]
-        ts     = pd.Series(totals)
-        r['inst_total_5d']  = safe_float(ts.tail(5).sum(),  0)
-        r['inst_total_20d'] = safe_float(ts.tail(20).sum(), 0)
+                r['dealer_5d']     = safe_float(r['dealer_5d'] + net.tail(5).sum(), 0)
+
+        # 三大合計：以日期彙總
+        daily = inst_df.groupby('date')['net'].sum()
+        r['inst_total_5d']  = safe_float(daily.tail(5).sum(),  0)
+        r['inst_total_20d'] = safe_float(daily.tail(20).sum(), 0)
         r['foreign_buying'] = r['foreign_5d'] > 0
         r['trust_buying']   = r['trust_5d']   > 0
 
+    # ── 融資融券 ──────────────────────────────────────────
     if not margin_df.empty:
         r['chip_available'] = True
-        if 'MarginPurchaseTodayBalance' in margin_df.columns:
-            mb = margin_df['MarginPurchaseTodayBalance']
+        cols = {c.lower(): c for c in margin_df.columns}
+
+        # 融資餘額：支援不同大小寫
+        mb_col = cols.get('marginpurchasetodaybalance')
+        if mb_col:
+            mb = margin_df[mb_col]
             r['margin_balance']   = safe_float(mb.iloc[-1], 0)
             r['margin_change_5d'] = safe_float(mb.iloc[-1] - mb.iloc[-6] if len(mb) >= 6 else 0, 0)
-        if 'ShortSaleTodayBalance' in margin_df.columns:
-            sb = margin_df['ShortSaleTodayBalance']
+
+        # 融券餘額
+        sb_col = cols.get('shortsaletodaybalance')
+        if sb_col:
+            sb = margin_df[sb_col]
             r['short_balance']   = safe_float(sb.iloc[-1], 0)
             r['short_change_5d'] = safe_float(sb.iloc[-1] - sb.iloc[-6] if len(sb) >= 6 else 0, 0)
+
         r['margin_healthy'] = r['margin_change_5d'] <= 0
         r['margin_safe']    = r['margin_healthy']
 
-    chip_score = sum([r['foreign_buying'], r['trust_buying'], r['margin_safe']])
-    r['chip_score'] = chip_score
+    r['chip_score'] = sum([r['foreign_buying'], r['trust_buying'], r['margin_safe']])
     return r
 
 def analyze(stock_id, df, cfg):
