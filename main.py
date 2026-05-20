@@ -191,25 +191,34 @@ def calc_chip(inst_df, margin_df):
     # ── 三大法人 ──────────────────────────────────────────
     if not inst_df.empty and 'name' in inst_df.columns:
         r['chip_available'] = True
-        # 名稱對應表（FinMind 可能用不同字串）
-        FOREIGN_NAMES = {'外資','外資及陸資','外資自營商','foreign','Foreign'}
-        TRUST_NAMES   = {'投信','investment trust','Trust'}
-        DEALER_NAMES  = {'自營商','dealer','Dealer','自營商(自行買賣)','自營商(避險)'}
 
-        for _, grp in inst_df.groupby('name'):
-            n = grp['name'].iloc[0]
-            net = grp['net']
-            if n in FOREIGN_NAMES:
+        def classify(name):
+            """用關鍵字判斷法人類型，不依賴精確名稱"""
+            n = str(name).lower()
+            # 自營商避險/自行買賣都算自營商，但要先判斷避免外資自營商誤判
+            if '外資' in n or 'foreign' in n:
+                return 'foreign'
+            if '投信' in n or 'trust' in n or 'investment' in n:
+                return 'trust'
+            if '自營' in n or 'dealer' in n:
+                return 'dealer'
+            return None
+
+        for name_val, grp in inst_df.groupby('name'):
+            kind = classify(name_val)
+            net  = grp['net']
+            print(f"[chip] name='{name_val}' -> kind={kind} rows={len(grp)}")
+            if kind == 'foreign':
                 r['foreign_today'] = safe_float(net.iloc[-1], 0)
-                r['foreign_5d']    = safe_float(net.tail(5).sum(), 0)
-                r['foreign_20d']   = safe_float(net.tail(20).sum(), 0)
-            elif n in TRUST_NAMES:
+                r['foreign_5d']   += safe_float(net.tail(5).sum(), 0)
+                r['foreign_20d']  += safe_float(net.tail(20).sum(), 0)
+            elif kind == 'trust':
                 r['trust_today']   = safe_float(net.iloc[-1], 0)
-                r['trust_5d']      = safe_float(net.tail(5).sum(), 0)
-                r['trust_20d']     = safe_float(net.tail(20).sum(), 0)
-            elif n in DEALER_NAMES:
+                r['trust_5d']     += safe_float(net.tail(5).sum(), 0)
+                r['trust_20d']    += safe_float(net.tail(20).sum(), 0)
+            elif kind == 'dealer':
                 r['dealer_today']  = safe_float(net.iloc[-1], 0)
-                r['dealer_5d']     = safe_float(r['dealer_5d'] + net.tail(5).sum(), 0)
+                r['dealer_5d']    += safe_float(net.tail(5).sum(), 0)
 
         # 三大合計：以日期彙總
         daily = inst_df.groupby('date')['net'].sum()
@@ -221,21 +230,32 @@ def calc_chip(inst_df, margin_df):
     # ── 融資融券 ──────────────────────────────────────────
     if not margin_df.empty:
         r['chip_available'] = True
-        cols = {c.lower(): c for c in margin_df.columns}
+        # 建立小寫對應表
+        col_map = {c.lower(): c for c in margin_df.columns}
+        print(f"[chip] margin cols={list(col_map.keys())}")
 
-        # 融資餘額：支援不同大小寫
-        mb_col = cols.get('marginpurchasetodaybalance')
-        if mb_col:
-            mb = margin_df[mb_col]
-            r['margin_balance']   = safe_float(mb.iloc[-1], 0)
-            r['margin_change_5d'] = safe_float(mb.iloc[-1] - mb.iloc[-6] if len(mb) >= 6 else 0, 0)
+        # 融資餘額（多種可能的欄位名稱）
+        for try_col in ['marginpurchasetodaybalance','margin_purchase_today_balance',
+                         'marginpurchase_today_balance']:
+            orig = col_map.get(try_col)
+            if orig:
+                mb = margin_df[orig]
+                r['margin_balance']   = safe_float(mb.iloc[-1], 0)
+                r['margin_change_5d'] = safe_float(
+                    mb.iloc[-1] - mb.iloc[-6] if len(mb) >= 6 else 0, 0)
+                print(f"[chip] margin_balance={r['margin_balance']} change5d={r['margin_change_5d']}")
+                break
 
         # 融券餘額
-        sb_col = cols.get('shortsaletodaybalance')
-        if sb_col:
-            sb = margin_df[sb_col]
-            r['short_balance']   = safe_float(sb.iloc[-1], 0)
-            r['short_change_5d'] = safe_float(sb.iloc[-1] - sb.iloc[-6] if len(sb) >= 6 else 0, 0)
+        for try_col in ['shortsaletodaybalance','short_sale_today_balance',
+                         'shortsale_today_balance']:
+            orig = col_map.get(try_col)
+            if orig:
+                sb = margin_df[orig]
+                r['short_balance']   = safe_float(sb.iloc[-1], 0)
+                r['short_change_5d'] = safe_float(
+                    sb.iloc[-1] - sb.iloc[-6] if len(sb) >= 6 else 0, 0)
+                break
 
         r['margin_healthy'] = r['margin_change_5d'] <= 0
         r['margin_safe']    = r['margin_healthy']
