@@ -88,6 +88,7 @@ class ScanRequest(BaseModel):
 
 class StrategyRequest(BaseModel):
     stock: dict
+    fundamental: Optional[dict] = None
 
 # ── FinMind 資料抓取 ──────────────────────────────────────
 def finmind_get(dataset, stock_id, start, end, token):
@@ -447,123 +448,185 @@ async def get_chart(code: str, token: str):
 
 @app.get("/api/fundamental/{code}")
 async def get_fundamental(code: str, token: str):
-    """抓取基本面資料：月營收、綜合損益表、股利政策"""
+    """基本面資料：PER/PBR/殖利率、月營收、財務指標、股利政策、除權息、重要日程"""
     try:
-        from datetime import timezone
-        today  = datetime.today()
-        y      = today.year
-        # 月營收：近12個月
-        rev_start = (today - timedelta(days=400)).strftime('%Y-%m-%d')
-        rev_end   = today.strftime('%Y-%m-%d')
-        # 財報：近2年
-        fin_start = f"{y-2}-01-01"
-        fin_end   = today.strftime('%Y-%m-%d')
-        # 股利：近5年
-        div_start = f"{y-5}-01-01"
-        div_end   = today.strftime('%Y-%m-%d')
+        today = datetime.today()
+        y     = today.year
 
         result = {
-            'revenue': [], 'financial': [],
-            'dividend': [], 'per_pbr': {},
+            'per_pbr':    {},
+            'revenue':    [],
+            'financial':  [],
+            'dividend':   [],
+            'ex_dividend': [],
+            'calendar':   [],   # 重要日程（財報公布期、除息日）
         }
+
+        # ── PER / PBR / 殖利率 ──────────────────────────
+        try:
+            d = finmind_get('TaiwanStockPER', code,
+                (today - timedelta(days=30)).strftime('%Y-%m-%d'),
+                today.strftime('%Y-%m-%d'), token)
+            print(f"[fund] PER msg={d.get('msg')} count={len(d.get('data',[]))}")
+            if d.get('data'):
+                df = pd.DataFrame(d['data']).sort_values('date')
+                latest = df.iloc[-1]
+                # 欄位名稱：PER, PBR, dividend_yield
+                result['per_pbr'] = {
+                    'date':           str(latest.get('date','')),
+                    'per':            safe_float(latest.get('PER', 0), 1),
+                    'pbr':            safe_float(latest.get('PBR', 0), 2),
+                    'dividend_yield': safe_float(latest.get('dividend_yield', 0), 2),
+                }
+                print(f"[fund] PER={result['per_pbr']['per']} PBR={result['per_pbr']['pbr']} yield={result['per_pbr']['dividend_yield']}")
+        except Exception as e:
+            print(f"[fund] PER error: {e}")
 
         # ── 月營收 ──────────────────────────────────────
         try:
-            d = finmind_get('TaiwanStockMonthRevenue', code, rev_start, rev_end, token)
+            rev_start = (today - timedelta(days=400)).strftime('%Y-%m-%d')
+            d = finmind_get('TaiwanStockMonthRevenue', code,
+                rev_start, today.strftime('%Y-%m-%d'), token)
             print(f"[fund] revenue msg={d.get('msg')} count={len(d.get('data',[]))}")
             if d.get('data'):
                 df = pd.DataFrame(d['data']).sort_values('date')
-                for col in ['revenue','last_month_revenue','last_year_month_revenue']:
-                    if col in df.columns:
+                print(f"[fund] revenue cols={df.columns.tolist()}")
+                for col in df.columns:
+                    if col not in ['date','stock_id','country']:
                         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
                 rows = []
                 for _, row in df.tail(13).iterrows():
                     rev    = safe_float(row.get('revenue', 0), 0)
                     lm_rev = safe_float(row.get('last_month_revenue', 0), 0)
                     ly_rev = safe_float(row.get('last_year_month_revenue', 0), 0)
-                    mom    = round((rev - lm_rev) / lm_rev * 100, 1) if lm_rev > 0 else 0
-                    yoy    = round((rev - ly_rev) / ly_rev * 100, 1) if ly_rev > 0 else 0
-                    rows.append({
-                        'date':  str(row.get('date','')),
-                        'revenue': rev,
-                        'mom': mom,  # 月增率
-                        'yoy': yoy,  # 年增率
-                    })
+                    mom    = round((rev-lm_rev)/lm_rev*100, 1) if lm_rev > 0 else 0.0
+                    yoy    = round((rev-ly_rev)/ly_rev*100, 1) if ly_rev > 0 else 0.0
+                    rows.append({'date': str(row.get('date','')),
+                                 'revenue': rev, 'mom': mom, 'yoy': yoy})
                 result['revenue'] = rows
         except Exception as e:
             print(f"[fund] revenue error: {e}")
 
-        # ── 綜合損益表（EPS、營業利益率） ───────────────
+        # ── 綜合損益表 ───────────────────────────────────
         try:
-            d = finmind_get('TaiwanStockFinancialStatements', code, fin_start, fin_end, token)
+            fin_start = f"{y-2}-01-01"
+            d = finmind_get('TaiwanStockFinancialStatements', code,
+                fin_start, today.strftime('%Y-%m-%d'), token)
             print(f"[fund] financial msg={d.get('msg')} count={len(d.get('data',[]))}")
             if d.get('data'):
                 df = pd.DataFrame(d['data'])
-                df['value'] = pd.to_numeric(df.get('value', pd.Series(dtype=float)), errors='coerce').fillna(0)
-                # 取出各季的關鍵指標
-                dates = sorted(df['date'].unique())[-8:] if 'date' in df.columns else []
+                print(f"[fund] financial cols={df.columns.tolist()}")
+                df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0)
                 rows = []
-                for dt in dates:
-                    sub  = df[df['date'] == dt]
-                    def get_val(typ):
+                for dt in sorted(df['date'].unique())[-8:]:
+                    sub = df[df['date'] == dt]
+                    def gv(typ):
                         r = sub[sub['type'] == typ]
                         return safe_float(r['value'].iloc[0], 2) if not r.empty else None
-                    eps         = get_val('EPS')
-                    op_income   = get_val('營業利益')
-                    revenue     = get_val('營業收入')
-                    net_income  = get_val('本期淨利（淨損）')
-                    op_margin   = round(op_income / revenue * 100, 1) if op_income and revenue and revenue != 0 else None
-                    net_margin  = round(net_income / revenue * 100, 1) if net_income and revenue and revenue != 0 else None
-                    rows.append({
-                        'date': str(dt), 'eps': eps,
-                        'op_margin': op_margin, 'net_margin': net_margin,
-                        'op_income': op_income, 'revenue': revenue,
-                    })
+                    eps        = gv('EPS')
+                    op_income  = gv('營業利益')
+                    revenue    = gv('營業收入')
+                    net_income = gv('本期淨利（淨損）')
+                    op_margin  = round(op_income/revenue*100,1) if op_income and revenue and revenue!=0 else None
+                    net_margin = round(net_income/revenue*100,1) if net_income and revenue and revenue!=0 else None
+                    rows.append({'date': str(dt), 'eps': eps,
+                                 'op_margin': op_margin, 'net_margin': net_margin,
+                                 'op_income': op_income, 'revenue': revenue})
                 result['financial'] = [r for r in rows if r['eps'] is not None or r['op_margin'] is not None]
         except Exception as e:
             print(f"[fund] financial error: {e}")
 
         # ── 股利政策 ─────────────────────────────────────
         try:
-            d = finmind_get('TaiwanStockDividend', code, div_start, div_end, token)
+            div_start = f"{y-5}-01-01"
+            d = finmind_get('TaiwanStockDividend', code,
+                div_start, today.strftime('%Y-%m-%d'), token)
             print(f"[fund] dividend msg={d.get('msg')} count={len(d.get('data',[]))}")
             if d.get('data'):
                 df = pd.DataFrame(d['data']).sort_values('date')
-                for col in ['CashDividend','StockDividend','CashEarningsDistribution',
-                            'StockEarningsDistribution']:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                print(f"[fund] dividend cols={df.columns.tolist()}")
                 rows = []
+                for col in df.columns:
+                    if col not in ['date','stock_id']:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
                 for _, row in df.tail(5).iterrows():
                     cash  = safe_float(row.get('CashDividend', 0), 2)
                     stock = safe_float(row.get('StockDividend', 0), 2)
-                    total = round(cash + stock, 2)
                     rows.append({
-                        'date':  str(row.get('date','')),
-                        'cash':  cash,
-                        'stock': stock,
-                        'total': total,
+                        'date':   str(row.get('date','')),
+                        'cash':   cash,
+                        'stock':  stock,
+                        'total':  round(cash + stock, 2),
                     })
                 result['dividend'] = rows
         except Exception as e:
             print(f"[fund] dividend error: {e}")
 
-        # ── PER / PBR（從技術面股價資料推算） ────────────
+        # ── 除權除息結果 ──────────────────────────────────
         try:
-            d = finmind_get('TaiwanStockPER', code,
-                (today - timedelta(days=10)).strftime('%Y-%m-%d'),
-                today.strftime('%Y-%m-%d'), token)
+            exdiv_start = f"{y-2}-01-01"
+            d = finmind_get('TaiwanStockDividendResult', code,
+                exdiv_start, today.strftime('%Y-%m-%d'), token)
+            print(f"[fund] exdiv msg={d.get('msg')} count={len(d.get('data',[]))}")
             if d.get('data'):
-                latest = d['data'][-1]
-                result['per_pbr'] = {
-                    'date': latest.get('date',''),
-                    'per':  safe_float(latest.get('PER', 0), 1),
-                    'pbr':  safe_float(latest.get('PBR', 0), 2),
-                    'dividend_yield': safe_float(latest.get('dividend_yield', 0), 2),
-                }
+                df = pd.DataFrame(d['data']).sort_values('date')
+                print(f"[fund] exdiv cols={df.columns.tolist()}")
+                for col in df.columns:
+                    if col not in ['date','stock_id']:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                rows = []
+                for _, row in df.tail(5).iterrows():
+                    cash_ex  = safe_float(row.get('CashExDividendTradingDate', 0) or row.get('cash_ex_dividend_trading_date', 0), 0)
+                    stock_ex = safe_float(row.get('StockExDividendTradingDate', 0) or row.get('stock_ex_dividend_trading_date', 0), 0)
+                    fill_pct = safe_float(row.get('percent', row.get('Percent', 0)), 1)
+                    rows.append({
+                        'date':     str(row.get('date','')),
+                        'cash_div': safe_float(row.get('CashDividend', 0), 2),
+                        'stock_div':safe_float(row.get('StockDividend', 0), 2),
+                        'ref_price':safe_float(row.get('OpenPrice', row.get('open_price', 0)), 2),
+                        'fill_pct': fill_pct,
+                    })
+                result['ex_dividend'] = rows
         except Exception as e:
-            print(f"[fund] per_pbr error (non-critical): {e}")
+            print(f"[fund] exdiv error: {e}")
 
+        # ── 重要日程推算 ──────────────────────────────────
+        # 台灣財報公布截止日：Q1(3月底)→5/15、Q2(6月底)→8/14、Q3(9月底)→11/14、Q4(12月底)→隔年3/31
+        calendar = []
+        report_deadlines = [
+            (f"{y}-05-15", f"Q1 財報截止日（{y}年）"),
+            (f"{y}-08-14", f"Q2 財報截止日（{y}年）"),
+            (f"{y}-11-14", f"Q3 財報截止日（{y}年）"),
+            (f"{y+1}-03-31", f"Q4/年報截止日（{y}年）"),
+        ]
+        today_str = today.strftime('%Y-%m-%d')
+        for dl_date, label in report_deadlines:
+            delta_days = (datetime.strptime(dl_date, '%Y-%m-%d') - today).days
+            if -30 <= delta_days <= 90:  # 只顯示30天前~90天後的
+                status = '已過' if delta_days < 0 else f'{delta_days}天後'
+                calendar.append({
+                    'date':   dl_date,
+                    'label':  label,
+                    'days':   delta_days,
+                    'status': status,
+                    'type':   'report',
+                })
+
+        # 若有除權息資料，加入最近一次除息日
+        if result['ex_dividend']:
+            latest_ex = result['ex_dividend'][-1]
+            ex_date   = latest_ex['date']
+            ex_delta  = (datetime.strptime(ex_date, '%Y-%m-%d') - today).days if ex_date else None
+            if ex_delta is not None and -365 <= ex_delta <= 365:
+                calendar.append({
+                    'date':   ex_date,
+                    'label':  f"最近一次除息日（現金股利 {latest_ex['cash_div']} 元）",
+                    'days':   ex_delta,
+                    'status': '已過' if ex_delta < 0 else f'{ex_delta}天後',
+                    'type':   'exdiv',
+                })
+
+        result['calendar'] = sorted(calendar, key=lambda x: x['date'])
         return result
 
     except Exception as e:
@@ -633,6 +696,8 @@ async def get_intraday(code: str, token: str):
 async def get_strategy(req: StrategyRequest):
     try:
         r = req.stock
+        f = req.fundamental or {}  # 基本面資料
+
         code, name, price = r.get('code',''), r.get('name',''), r.get('price',0)
         tech_score   = r.get('score', 0)
         chip_score   = r.get('chip_score', 0)
@@ -659,6 +724,40 @@ async def get_strategy(req: StrategyRequest):
         vol_ratio    = r.get('vol_ratio', 1)
         margin_chg   = r.get('margin_change_5d', 0)
 
+        # ── 基本面資料解析 ─────────────────────────────
+        per_pbr      = f.get('per_pbr', {})
+        per          = per_pbr.get('per', 0)
+        pbr          = per_pbr.get('pbr', 0)
+        div_yield    = per_pbr.get('dividend_yield', 0)
+        revenue_list = f.get('revenue', [])
+        fin_list     = f.get('financial', [])
+        calendar     = f.get('calendar', [])
+        ex_div_list  = f.get('ex_dividend', [])
+
+        # 月營收年增率（最新）
+        latest_rev = revenue_list[-1] if revenue_list else {}
+        rev_yoy    = latest_rev.get('yoy', 0)
+        rev_mom    = latest_rev.get('mom', 0)
+        # 連續幾個月年增率為正
+        pos_yoy_months = sum(1 for r2 in revenue_list[-3:] if r2.get('yoy', 0) > 0)
+
+        # EPS 趨勢
+        eps_vals = [r2['eps'] for r2 in fin_list if r2.get('eps') is not None]
+        eps_growing = len(eps_vals) >= 2 and eps_vals[-1] > eps_vals[-2] if eps_vals else False
+        latest_eps  = eps_vals[-1] if eps_vals else None
+
+        # 近期重要日程
+        upcoming_reports = [c for c in calendar if c.get('type')=='report' and 0 <= c.get('days',999) <= 14]
+        past_reports     = [c for c in calendar if c.get('type')=='report' and -7 <= c.get('days',999) < 0]
+        near_exdiv       = [c for c in calendar if c.get('type')=='exdiv'  and 0 <= c.get('days',999) <= 30]
+        recent_exdiv     = [c for c in calendar if c.get('type')=='exdiv'  and -30 <= c.get('days',999) < 0]
+
+        # 填息能力
+        fill_rates  = [e.get('fill_pct',0) for e in ex_div_list if e.get('fill_pct',0) > 0]
+        avg_fill    = sum(fill_rates)/len(fill_rates) if fill_rates else 0
+
+        fund_avail  = bool(f)
+
         # 短線
         ss, sr = [], []
         if macd_golden:  ss.append('MACD 剛發生金叉，短線動能轉強')
@@ -666,9 +765,34 @@ async def get_strategy(req: StrategyRequest):
         if price_break:  ss.append('突破近20日高點，短線有突破動能')
         if rsi_strong:   ss.append(f'RSI {rsi:.0f} 在強勢區間，多頭動能足夠')
         if bb_pos > 70 and bb_expanding: ss.append('布林通道擴張且偏上軌，短線趨勢向上')
+        # 基本面短線訊號
+        if fund_avail:
+            if rev_yoy >= 20 and pos_yoy_months >= 3:
+                ss.append(f'月營收年增率 +{rev_yoy}%，連{pos_yoy_months}個月成長，基本面支撐突破')
+            elif rev_yoy >= 5:
+                ss.append(f'月營收年增率 +{rev_yoy}%，基本面正向')
+            if eps_growing and latest_eps and latest_eps > 0:
+                ss.append(f'EPS 季增至 {latest_eps}，獲利改善強化突破可信度')
+            if near_exdiv:
+                ss.append(f'除息日約 {near_exdiv[0]["days"]} 天後，除息前常有買盤')
+            if recent_exdiv and avg_fill >= 80:
+                ss.append(f'歷史平均填息率 {avg_fill:.0f}%，除息後支撐力強')
+
+        # 短線風險
         if rsi > 75:     sr.append(f'RSI {rsi:.0f} 已過熱，短線回調風險')
         if bb_pos > 90:  sr.append(f'股價貼近布林上軌 {bb_upper:.2f}，短線壓力大')
         if not vol_surge and price_break: sr.append('突破時量能不足，留意是否假突破')
+        # 基本面短線風險
+        if fund_avail:
+            if upcoming_reports:
+                sr.append(f'⚠️ {upcoming_reports[0]["label"]}（{upcoming_reports[0]["days"]}天後），財報前後波動大，避免重押')
+            if past_reports:
+                sr.append(f'剛過財報截止日，若財報遜色可能有賣壓')
+            if per > 30:
+                sr.append(f'本益比 {per}x 偏高，即使突破回調空間也較大')
+            if rev_yoy < -10:
+                sr.append(f'月營收年減 {abs(rev_yoy)}%，基本面偏弱，短線突破需更謹慎')
+
         sa = '積極' if len(ss)>=3 else ('中性偏多' if len(ss)>=2 else ('謹慎' if sr else '觀望'))
         sn = (f'多項短線訊號同時出現，可考慮短線進場，留意 {bb_upper:.2f} 壓力' if len(ss)>=3
               else '短線訊號尚可，建議小量試單，嚴設停損' if len(ss)>=2
@@ -706,9 +830,11 @@ async def get_strategy(req: StrategyRequest):
 
         warnings = []
         if not chip_avail: warnings.append('⚠️ 籌碼面資料取得失敗，建議僅基於技術面參考')
+        if not fund_avail: warnings.append('⚠️ 基本面資料取得失敗，操作建議僅基於技術面與籌碼面')
         if rsi > 80:       warnings.append(f'⚠️ RSI {rsi:.0f} 極度過熱，任何操作需謹慎')
         if bb_pos > 95:    warnings.append('⚠️ 股價已突破布林上軌，回調風險極高')
-        warnings.append('⚠️ 以上為技術面與籌碼面分析，不構成投資建議，操作請自行判斷並設定停損')
+        if upcoming_reports: warnings.append(f'⚠️ 注意！{upcoming_reports[0]["label"]}即將到來，財報公布前後波動劇烈')
+        warnings.append('⚠️ 以上為技術面、籌碼面與基本面分析，不構成投資建議，操作請自行判斷並設定停損')
 
         return {
             'code':code,'name':name,'price':price,
