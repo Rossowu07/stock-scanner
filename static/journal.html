@@ -31,8 +31,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
           padding:5px 11px;border:1px solid var(--border);border-radius:var(--radius-sm)}
 
 /* ── 主體：左右各半 ── */
-.main-area{flex:1;display:flex;overflow:hidden;
-           padding-bottom:var(--bottomnav-h)}
+.main-area{flex:1;display:flex;overflow:hidden}
 
 .half{flex:1;display:flex;flex-direction:column;overflow:hidden;
       border-right:1px solid var(--border)}
@@ -41,9 +40,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
             text-transform:uppercase;letter-spacing:.05em;
             padding:10px 14px 8px;background:var(--card);
             border-bottom:1px solid var(--border-light);flex-shrink:0}
-.half-body{flex:1;overflow-y:auto;padding:12px;
+.half-body{flex:1;overflow-y:auto;padding:12px 12px 8px;
            -webkit-overflow-scrolling:touch}
-.half-footer{flex-shrink:0;padding:10px 12px;
+.half-footer{flex-shrink:0;padding:8px 12px;
+             padding-bottom:calc(8px + var(--bottomnav-h));
              border-top:1px solid var(--border-light);
              background:var(--card)}
 
