@@ -1224,7 +1224,10 @@ function renderFundamentalTab(d, container) {
           </tr>`).join('')}</tbody>
         </table>
       </div>
-      <div class="fund-hint" style="margin-top:6px">填息率：除息後股價回補缺口的比率。100% = 完整填息。歷史填息能力強，代表除息後短線支撐較佳。</div>
+      <div class="fund-hint" style="margin-top:6px">
+        填息率：以除息當日最高價估算，100% = 除息當日盤中已完整填息。
+        注意：此為除息當日的即時填息情況，長期填息需另外追蹤後續收盤價。
+      </div>
     </div>`;
   }
 
