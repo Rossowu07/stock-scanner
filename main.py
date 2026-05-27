@@ -564,36 +564,39 @@ async def get_fundamental(code: str, token: str):
             print(f"[fund] dividend msg={d.get('msg')} count={len(d.get('data',[]))}")
             if d.get('data'):
                 df = pd.DataFrame(d['data']).sort_values('date')
-                print(f"[fund] dividend cols={df.columns.tolist()}")
+                print(f"[fund] dividend sample={df.tail(2).to_dict('records')}")
+                str_cols = ['date','stock_id','year','AnnouncementDate','AnnouncementTime',
+                            'CashExDividendTradingDate','StockExDividendTradingDate',
+                            'CashDividendPaymentDate']
                 for col in df.columns:
-                    if col not in ['date','stock_id','year','AnnouncementDate','AnnouncementTime',
-                                   'CashExDividendTradingDate','StockExDividendTradingDate',
-                                   'CashDividendPaymentDate']:
+                    if col not in str_cols:
                         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
                 rows = []
                 for _, row in df.tail(10).iterrows():
-                    # 正確欄位：CashEarningsDistribution（現金股利）、StockEarningsDistribution（股票股利）
-                    cash  = safe_float(row.get('CashEarningsDistribution', 0), 2)
-                    stock = safe_float(row.get('StockEarningsDistribution', 0), 2)
-                    # 備用：也嘗試 CashStatutorySurplus（法定盈餘公積現金）加總
-                    cash_surplus  = safe_float(row.get('CashStatutorySurplus', 0), 2)
-                    stock_surplus = safe_float(row.get('StockStatutorySurplus', 0), 2)
-                    total_cash    = round(cash + cash_surplus, 2)
-                    total_stock   = round(stock + stock_surplus, 2)
+                    # 現金股利 = CashEarningsDistribution + CashStatutorySurplus
+                    cash = safe_float(row.get('CashEarningsDistribution', 0), 2) + \
+                           safe_float(row.get('CashStatutorySurplus', 0), 2)
+                    # 股票股利 = StockEarningsDistribution + StockStatutorySurplus
+                    stock = safe_float(row.get('StockEarningsDistribution', 0), 2) + \
+                            safe_float(row.get('StockStatutorySurplus', 0), 2)
+                    cash  = round(cash, 2)
+                    stock = round(stock, 2)
                     # 除息/除權日
-                    cash_ex_date  = str(row.get('CashExDividendTradingDate', '') or '')
-                    stock_ex_date = str(row.get('StockExDividendTradingDate', '') or '')
-                    ex_date = cash_ex_date if cash_ex_date and cash_ex_date != 'nan' else stock_ex_date
-                    if total_cash > 0 or total_stock > 0:
-                        rows.append({
-                            'date':       str(row.get('date','')),
-                            'year':       str(row.get('year','')),
-                            'ex_date':    ex_date,
-                            'cash':       total_cash,
-                            'stock':      total_stock,
-                            'total':      round(total_cash + total_stock, 2),
-                        })
-                result['dividend'] = rows
+                    cash_ex  = str(row.get('CashExDividendTradingDate','') or '')
+                    stock_ex = str(row.get('StockExDividendTradingDate','') or '')
+                    ex_date  = cash_ex if cash_ex and cash_ex not in ('nan','0','') \
+                               else (stock_ex if stock_ex and stock_ex not in ('nan','0','') else '')
+                    # 全部都加入，不過濾（讓前端顯示 — 表示無配息）
+                    rows.append({
+                        'date':    str(row.get('date','')),
+                        'year':    str(row.get('year','')),
+                        'ex_date': ex_date,
+                        'cash':    cash,
+                        'stock':   stock,
+                        'total':   round(cash + stock, 2),
+                    })
+                # 只保留有配息或配股的年度
+                result['dividend'] = [r for r in rows if r['total'] > 0]
         except Exception as e:
             print(f"[fund] dividend error: {e}")
 
@@ -618,31 +621,39 @@ async def get_fundamental(code: str, token: str):
 
                 rows = []
                 for _, row in df.tail(6).iterrows():
-                    before    = safe_float(row.get('before_price', 0), 2)
-                    after     = safe_float(row.get('after_price', 0), 2)
-                    div_amt   = safe_float(row.get('stock_and_cache_dividend', 0), 2)
-                    div_type  = str(row.get('stock_or_cache_dividend', ''))
-                    is_cash   = div_type in ['息', 'cash', 'Cash', '現金']
-                    is_stock  = div_type in ['權', 'stock', 'Stock', '股票']
-                    # 填息率：(現價 - 除息後價格) / 除息金額 * 100
-                    # 用 after_price 和 before_price 推算：完整填息 = after >= before
-                    open_p    = safe_float(row.get('open_price', 0), 2)
-                    fill_pct  = 0.0
+                    before   = safe_float(row.get('before_price', 0), 2)
+                    after    = safe_float(row.get('after_price', 0), 2)   # 除息後參考開盤價
+                    div_amt  = safe_float(row.get('stock_and_cache_dividend', 0), 2)
+                    div_type = str(row.get('stock_or_cache_dividend', ''))
+                    is_cash  = div_type in ['息', 'cash', 'Cash', '現金']
+                    is_stock = div_type in ['權', 'stock', 'Stock', '股票']
+                    max_p    = safe_float(row.get('max_price', 0), 2)     # 除息後當日最高價
+
+                    # 填息率計算：
+                    # after_price = before_price - div_amt（除息缺口）
+                    # 若 max_price >= before_price，當日已完整填息 = 100%
+                    # 否則：(max_price - after_price) / div_amt * 100
+                    fill_pct = 0.0
                     if before > 0 and after > 0 and div_amt > 0:
-                        # 除息後若 open_price 已回到 before_price 水準 = 完全填息
-                        ref_price = safe_float(row.get('reference_price', after), 2)
-                        fill_pct  = round(min((ref_price - after) / div_amt * 100, 100), 1) if div_amt > 0 else 0.0
-                        fill_pct  = max(fill_pct, 0.0)
+                        ex_gap = before - after   # 理論除息缺口
+                        if ex_gap <= 0:
+                            ex_gap = div_amt
+                        if max_p >= before:
+                            fill_pct = 100.0
+                        elif max_p > after:
+                            fill_pct = round(min((max_p - after) / ex_gap * 100, 100), 1)
+                        else:
+                            fill_pct = 0.0
 
                     rows.append({
-                        'date':      str(row.get('date','')),
-                        'div_amt':   div_amt,
-                        'div_type':  '現金股利' if is_cash else ('股票股利' if is_stock else div_type),
-                        'cash_div':  div_amt if is_cash else 0.0,
-                        'stock_div': div_amt if is_stock else 0.0,
+                        'date':         str(row.get('date','')),
+                        'div_amt':      div_amt,
+                        'div_type':     '現金股利' if is_cash else ('股票股利' if is_stock else div_type),
+                        'cash_div':     div_amt if is_cash else 0.0,
+                        'stock_div':    div_amt if is_stock else 0.0,
                         'before_price': before,
                         'after_price':  after,
-                        'fill_pct':  fill_pct,
+                        'fill_pct':     fill_pct,
                     })
                 result['ex_dividend'] = rows
         except Exception as e:
