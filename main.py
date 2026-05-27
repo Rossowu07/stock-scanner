@@ -949,7 +949,7 @@ def init_db():
                 action      VARCHAR(10)  NOT NULL,
                 price       NUMERIC(12,2) NOT NULL,
                 shares      INTEGER      NOT NULL,
-                date        VARCHAR(12)  NOT NULL,
+                date        VARCHAR(25)  NOT NULL,
                 note        TEXT         DEFAULT '',
                 trigger     VARCHAR(20)  DEFAULT 'manual',
                 signals     JSONB        DEFAULT '[]',
@@ -964,11 +964,22 @@ def init_db():
                 hold_days   INTEGER,
                 exit_reason VARCHAR(50),
                 buy_price   NUMERIC(12,2),
-                buy_date    VARCHAR(12),
+                buy_date    VARCHAR(25),
+                fee_discount NUMERIC(4,2) DEFAULT 0.6,
+                is_daytrade  BOOLEAN      DEFAULT FALSE,
                 created_at  TIMESTAMP    DEFAULT NOW()
             )
         """)
         conn.commit()
+        # 為舊資料表補新欄位（若已存在不會報錯）
+        for sql in [
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS fee_discount NUMERIC(4,2) DEFAULT 0.6",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS is_daytrade  BOOLEAN      DEFAULT FALSE",
+            "ALTER TABLE trades ALTER COLUMN date TYPE VARCHAR(25)",
+            "ALTER TABLE trades ALTER COLUMN buy_date TYPE VARCHAR(25)",
+        ]:
+            try: cur.execute(sql); conn.commit()
+            except: conn.rollback()
         cur.close()
         conn.close()
         print("✅ 資料庫初始化完成")
@@ -976,11 +987,14 @@ def init_db():
         print(f"⚠️ 資料庫初始化失敗: {e}")
 
 # ── 費用計算 ──────────────────────────────────────────
-def calc_fee(price: float, shares: int, is_sell: bool) -> dict:
-    amount = price * shares * 1000
-    fee    = max(round(amount * FEE_RATE), MIN_FEE)
-    tax    = round(amount * TAX_RATE) if is_sell else 0
-    net    = amount - fee - tax if is_sell else amount + fee
+def calc_fee(price: float, shares: int, is_sell: bool,
+             fee_discount: float = 0.6, is_daytrade: bool = False) -> dict:
+    amount   = price * shares * 1000
+    fee_rate = FEE_RATE * fee_discount
+    fee      = max(round(amount * fee_rate), MIN_FEE)
+    tax_rate = 0.0015 if (is_sell and is_daytrade) else (TAX_RATE if is_sell else 0)
+    tax      = round(amount * tax_rate) if is_sell else 0
+    net      = amount - fee - tax if is_sell else amount + fee
     return {'amount': amount, 'fee': fee, 'tax': tax, 'net': net}
 
 def calc_pnl(buy_price, sell_price, shares, buy_fee, sell_fee, sell_tax):
@@ -1005,16 +1019,18 @@ def row_to_dict(row):
 
 # ── 資料模型 ──────────────────────────────────────────
 class TradeIn(BaseModel):
-    code:     str
-    name:     str
-    action:   str
-    price:    float
-    shares:   int
-    date:     str
-    note:     Optional[str] = ""
-    trigger:  Optional[str] = "manual"
-    signals:  Optional[list] = []
-    close_id: Optional[int] = None
+    code:         str
+    name:         str
+    action:       str
+    price:        float
+    shares:       int
+    date:         str        # 可含時間：'2025-01-01 09:30:05'
+    note:         Optional[str]   = ""
+    trigger:      Optional[str]   = "manual"
+    signals:      Optional[list]  = []
+    close_id:     Optional[int]   = None
+    fee_discount: Optional[float] = 0.6   # 手續費折扣
+    is_daytrade:  Optional[bool]  = False  # 當沖（賣出稅 0.15%）
 
 class BacktestRequest(BaseModel):
     token:               str
@@ -1050,7 +1066,9 @@ async def get_trades():
 @app.post("/api/journal/trade")
 async def add_trade(t: TradeIn):
     try:
-        cost = calc_fee(t.price, t.shares, t.action == 'sell')
+        discount    = t.fee_discount or 0.6
+        is_daytrade = t.is_daytrade or False
+        cost = calc_fee(t.price, t.shares, t.action == 'sell', discount, is_daytrade)
         conn = get_db()
         cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -1074,15 +1092,17 @@ async def add_trade(t: TradeIn):
         cur.execute("""
             INSERT INTO trades
               (code,name,action,price,shares,date,note,trigger,signals,
-               amount,fee,tax,net,close_id,pnl,pnl_pct,status,buy_price,buy_date)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               amount,fee,tax,net,close_id,pnl,pnl_pct,status,buy_price,buy_date,
+               fee_discount,is_daytrade)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING *
         """, (t.code, t.name, t.action, t.price, t.shares, t.date,
               t.note or '', t.trigger or 'manual',
               _json.dumps(t.signals or [], ensure_ascii=False),
               cost['amount'], cost['fee'], cost['tax'], cost['net'],
               t.close_id, pnl, pnl_pct, status,
-              buy_price_ref, buy_date_ref))
+              buy_price_ref, buy_date_ref,
+              discount, is_daytrade))
         trade = row_to_dict(cur.fetchone())
         conn.commit(); cur.close(); conn.close()
         return trade
