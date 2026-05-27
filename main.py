@@ -26,6 +26,7 @@ def download_lc_if_needed():
 @asynccontextmanager
 async def lifespan(app):
     download_lc_if_needed()
+    init_db()
     yield
 
 app = FastAPI(title="台股突破訊號掃描器", lifespan=lifespan)
@@ -913,6 +914,391 @@ async def get_strategy(req: StrategyRequest):
             'long': {'action':la,'note':ln,'signals':ls,'risks':lr},
             'risk_warnings': warnings,
         }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+# ══════════════════════════════════════════════════════
+# 交易簿模組（PostgreSQL 永久儲存）
+# ══════════════════════════════════════════════════════
+import json as _json
+import psycopg2
+import psycopg2.extras
+
+FEE_RATE = 0.001425
+TAX_RATE = 0.003
+MIN_FEE  = 20
+
+# ── 資料庫連線 ────────────────────────────────────────
+def get_db():
+    db_url = os.environ.get('DATABASE_URL')
+    if not db_url:
+        raise RuntimeError('DATABASE_URL 環境變數未設定')
+    return psycopg2.connect(db_url, sslmode='require')
+
+def init_db():
+    """建立資料表（若不存在）"""
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id          SERIAL PRIMARY KEY,
+                code        VARCHAR(10)  NOT NULL,
+                name        VARCHAR(50)  NOT NULL,
+                action      VARCHAR(10)  NOT NULL,
+                price       NUMERIC(12,2) NOT NULL,
+                shares      INTEGER      NOT NULL,
+                date        VARCHAR(12)  NOT NULL,
+                note        TEXT         DEFAULT '',
+                trigger     VARCHAR(20)  DEFAULT 'manual',
+                signals     JSONB        DEFAULT '[]',
+                amount      NUMERIC(15,2),
+                fee         INTEGER,
+                tax         INTEGER      DEFAULT 0,
+                net         NUMERIC(15,2),
+                close_id    INTEGER      REFERENCES trades(id),
+                pnl         INTEGER,
+                pnl_pct     NUMERIC(8,2),
+                status      VARCHAR(10)  DEFAULT 'open',
+                hold_days   INTEGER,
+                exit_reason VARCHAR(50),
+                buy_price   NUMERIC(12,2),
+                buy_date    VARCHAR(12),
+                created_at  TIMESTAMP    DEFAULT NOW()
+            )
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("✅ 資料庫初始化完成")
+    except Exception as e:
+        print(f"⚠️ 資料庫初始化失敗: {e}")
+
+# ── 費用計算 ──────────────────────────────────────────
+def calc_fee(price: float, shares: int, is_sell: bool) -> dict:
+    amount = price * shares * 1000
+    fee    = max(round(amount * FEE_RATE), MIN_FEE)
+    tax    = round(amount * TAX_RATE) if is_sell else 0
+    net    = amount - fee - tax if is_sell else amount + fee
+    return {'amount': amount, 'fee': fee, 'tax': tax, 'net': net}
+
+def calc_pnl(buy_price, sell_price, shares, buy_fee, sell_fee, sell_tax):
+    gross   = (sell_price - buy_price) * shares * 1000
+    cost    = buy_fee + sell_fee + sell_tax
+    net     = gross - cost
+    pnl_pct = round(net / (buy_price * shares * 1000 + buy_fee) * 100, 2)
+    return {'gross': round(gross), 'cost': round(cost),
+            'net': round(net), 'pnl_pct': pnl_pct}
+
+def row_to_dict(row):
+    """psycopg2 RealDictRow → 標準 dict，處理 Decimal 型別"""
+    if row is None: return None
+    d = dict(row)
+    for k, v in d.items():
+        if hasattr(v, '__float__'): d[k] = float(v)
+        if isinstance(v, (bytes,)): d[k] = v.decode()
+    if 'signals' in d and isinstance(d['signals'], str):
+        try: d['signals'] = _json.loads(d['signals'])
+        except: d['signals'] = []
+    return d
+
+# ── 資料模型 ──────────────────────────────────────────
+class TradeIn(BaseModel):
+    code:     str
+    name:     str
+    action:   str
+    price:    float
+    shares:   int
+    date:     str
+    note:     Optional[str] = ""
+    trigger:  Optional[str] = "manual"
+    signals:  Optional[list] = []
+    close_id: Optional[int] = None
+
+class BacktestRequest(BaseModel):
+    token:               str
+    code:                str
+    start_date:          str
+    end_date:            str
+    shares:              int   = 1
+    stop_loss:           float = 7.0
+    take_profit:         float = 15.0
+    need_price_breakout: bool  = True
+    need_volume_surge:   bool  = True
+    need_macd_positive:  bool  = True
+    need_rsi_strong:     bool  = False
+    need_ma_bullish:     bool  = True
+    min_signals:         int   = 3
+
+@app.get("/journal")
+async def journal_page():
+    return FileResponse("static/journal.html")
+
+@app.get("/api/journal/trades")
+async def get_trades():
+    try:
+        conn = get_db()
+        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM trades ORDER BY id DESC")
+        trades = [row_to_dict(r) for r in cur.fetchall()]
+        cur.close(); conn.close()
+        return {"trades": trades}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/journal/trade")
+async def add_trade(t: TradeIn):
+    try:
+        cost = calc_fee(t.price, t.shares, t.action == 'sell')
+        conn = get_db()
+        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        pnl = pnl_pct = buy_price_ref = buy_date_ref = None
+        status = 'open' if t.action == 'buy' else 'closed'
+
+        # 賣出時計算損益，並更新買入單狀態
+        if t.action == 'sell' and t.close_id:
+            cur.execute("SELECT * FROM trades WHERE id=%s", (t.close_id,))
+            buy = row_to_dict(cur.fetchone())
+            if buy:
+                p = calc_pnl(buy['price'], t.price, t.shares,
+                             buy['fee'], cost['fee'], cost['tax'])
+                pnl          = p['net']
+                pnl_pct      = p['pnl_pct']
+                buy_price_ref= buy['price']
+                buy_date_ref = buy['date']
+                cur.execute("UPDATE trades SET status='closed', close_id=currval('trades_id_seq') WHERE id=%s",
+                            (t.close_id,))
+
+        cur.execute("""
+            INSERT INTO trades
+              (code,name,action,price,shares,date,note,trigger,signals,
+               amount,fee,tax,net,close_id,pnl,pnl_pct,status,buy_price,buy_date)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING *
+        """, (t.code, t.name, t.action, t.price, t.shares, t.date,
+              t.note or '', t.trigger or 'manual',
+              _json.dumps(t.signals or [], ensure_ascii=False),
+              cost['amount'], cost['fee'], cost['tax'], cost['net'],
+              t.close_id, pnl, pnl_pct, status,
+              buy_price_ref, buy_date_ref))
+        trade = row_to_dict(cur.fetchone())
+        conn.commit(); cur.close(); conn.close()
+        return trade
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/journal/trade/{trade_id}")
+async def delete_trade(trade_id: int):
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("DELETE FROM trades WHERE id=%s", (trade_id,))
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/journal/stats")
+async def get_stats():
+    try:
+        conn = get_db()
+        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM trades WHERE pnl IS NOT NULL")
+        closed = [row_to_dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT COUNT(*) as c FROM trades WHERE status='open'")
+        open_count = cur.fetchone()['c']
+        cur.close(); conn.close()
+
+        wins   = [t for t in closed if t['pnl'] > 0]
+        losses = [t for t in closed if t['pnl'] <= 0]
+        total_pnl = sum(t['pnl'] for t in closed)
+        win_rate  = round(len(wins)/len(closed)*100,1) if closed else 0
+        avg_win   = round(sum(t['pnl'] for t in wins)/len(wins))   if wins   else 0
+        avg_loss  = round(sum(t['pnl'] for t in losses)/len(losses)) if losses else 0
+        rr_ratio  = round(abs(avg_win/avg_loss),2) if avg_loss != 0 else 0
+        return {
+            'total_trades': len(closed),
+            'open_trades':  int(open_count),
+            'wins':         len(wins),
+            'losses':       len(losses),
+            'win_rate':     win_rate,
+            'total_pnl':    round(total_pnl),
+            'avg_win':      avg_win,
+            'avg_loss':     avg_loss,
+            'rr_ratio':     rr_ratio,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/backtest")
+async def run_backtest(req: BacktestRequest):
+    """用歷史資料回測技術訊號策略"""
+    try:
+        # 取得完整歷史資料
+        df = finmind_get('TaiwanStockPrice', req.code,
+                         req.start_date, req.end_date, req.token)
+        if not df.get('data'):
+            raise HTTPException(status_code=400, detail="無歷史資料")
+        price_df = pd.DataFrame(df['data']).sort_values('date').reset_index(drop=True)
+        for col in ['open','close','max','min']:
+            price_df[col] = pd.to_numeric(price_df[col], errors='coerce')
+        price_df['Trading_Volume'] = pd.to_numeric(
+            price_df['Trading_Volume'], errors='coerce').fillna(0)
+
+        closes  = price_df['close']
+        volumes = price_df['Trading_Volume']
+        highs   = price_df['max']
+        n       = len(price_df)
+
+        # 預算技術指標（全序列）
+        ma5  = closes.rolling(5,  min_periods=1).mean()
+        ma10 = closes.rolling(10, min_periods=1).mean()
+        ma20 = closes.rolling(20, min_periods=1).mean()
+        e12  = closes.ewm(span=12, adjust=False).mean()
+        e26  = closes.ewm(span=26, adjust=False).mean()
+        ml   = e12 - e26
+        macd_hist = ml - ml.ewm(span=9, adjust=False).mean()
+        delta = closes.diff()
+        gain  = delta.clip(lower=0).rolling(14, min_periods=1).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
+        rsi_s = 100 - 100 / (1 + gain / loss.where(loss!=0, other=1e-9))
+        vol_avg = volumes.rolling(20, min_periods=1).mean()
+
+        trades    = []
+        trade_id  = 1
+        in_trade  = False
+        buy_price = 0.0
+        buy_date  = ''
+        buy_idx   = 0
+        buy_signals = []
+
+        for i in range(30, n):   # 前30天預熱指標
+            row    = price_df.iloc[i]
+            date   = str(row['date'])
+            price  = float(row['close'])
+            high   = float(row['max'])
+            low    = float(row['min'])
+            vol    = float(volumes.iloc[i])
+            v_avg  = float(vol_avg.iloc[i])
+
+            # 計算當日訊號
+            pb  = price >= float(highs.iloc[max(0,i-20):i].max()) * 0.97
+            vs  = vol >= v_avg * 1.5
+            mp  = float(macd_hist.iloc[i]) > 0
+            rs  = 55 <= float(rsi_s.iloc[i]) <= 75
+            mab = float(ma5.iloc[i]) > float(ma10.iloc[i]) > float(ma20.iloc[i])
+
+            sig_map = {
+                'price_breakout': pb and req.need_price_breakout,
+                'volume_surge':   vs and req.need_volume_surge,
+                'macd_positive':  mp and req.need_macd_positive,
+                'rsi_strong':     rs and req.need_rsi_strong,
+                'ma_bullish':     mab and req.need_ma_bullish,
+            }
+            hit_signals = [k for k, v in sig_map.items() if v]
+
+            if not in_trade:
+                # 買入條件：勾選的訊號中至少達到 min_signals 個
+                required = [k for k,v in sig_map.items() if v]
+                if len(required) >= req.min_signals:
+                    buy_price   = price
+                    buy_date    = date
+                    buy_idx     = i
+                    buy_signals = required
+                    buy_cost    = calc_fee(buy_price, req.shares, False)
+                    in_trade    = True
+                    trades.append({
+                        'id':        trade_id,
+                        'type':      'buy',
+                        'code':      req.code,
+                        'date':      date,
+                        'price':     buy_price,
+                        'shares':    req.shares,
+                        'amount':    buy_cost['amount'],
+                        'fee':       buy_cost['fee'],
+                        'net':       buy_cost['net'],
+                        'signals':   required,
+                        'pnl':       None,
+                        'pnl_pct':   None,
+                        'hold_days': None,
+                        'exit_reason': None,
+                    })
+                    trade_id += 1
+            else:
+                # 停損停利或最後一天出場
+                pnl_pct  = (price - buy_price) / buy_price * 100
+                max_pnl  = (high  - buy_price) / buy_price * 100
+                min_pnl  = (low   - buy_price) / buy_price * 100
+                hold_days = i - buy_idx
+                exit_reason = None
+                exit_price  = price
+
+                if min_pnl <= -req.stop_loss:
+                    exit_reason = f'停損 -{req.stop_loss}%'
+                    exit_price  = round(buy_price * (1 - req.stop_loss/100), 2)
+                elif max_pnl >= req.take_profit:
+                    exit_reason = f'停利 +{req.take_profit}%'
+                    exit_price  = round(buy_price * (1 + req.take_profit/100), 2)
+                elif i == n - 1:
+                    exit_reason = '區間結束'
+
+                if exit_reason:
+                    sell_cost = calc_fee(exit_price, req.shares, True)
+                    pnl = calc_pnl(buy_price, exit_price, req.shares,
+                                   trades[-1]['fee'], sell_cost['fee'], sell_cost['tax'])
+                    sell_trade = {
+                        'id':          trade_id,
+                        'type':        'sell',
+                        'code':        req.code,
+                        'date':        date,
+                        'price':       exit_price,
+                        'shares':      req.shares,
+                        'amount':      sell_cost['amount'],
+                        'fee':         sell_cost['fee'],
+                        'tax':         sell_cost['tax'],
+                        'net':         sell_cost['net'],
+                        'signals':     [],
+                        'pnl':         pnl['net'],
+                        'pnl_pct':     pnl['pnl_pct'],
+                        'hold_days':   hold_days,
+                        'exit_reason': exit_reason,
+                        'buy_price':   buy_price,
+                        'buy_date':    buy_date,
+                    }
+                    trades.append(sell_trade)
+                    trade_id += 1
+                    in_trade = False
+
+        # 統計
+        sells    = [t for t in trades if t['type']=='sell']
+        wins     = [t for t in sells if t['pnl'] > 0]
+        losses   = [t for t in sells if t['pnl'] <= 0]
+        total_pnl = sum(t['pnl'] for t in sells)
+        win_rate  = round(len(wins)/len(sells)*100,1) if sells else 0
+        avg_hold  = round(sum(t['hold_days'] for t in sells)/len(sells)) if sells else 0
+        max_win   = max((t['pnl'] for t in wins),   default=0)
+        max_loss  = min((t['pnl'] for t in losses), default=0)
+
+        return {
+            'code':        req.code,
+            'start_date':  req.start_date,
+            'end_date':    req.end_date,
+            'total_trades': len(sells),
+            'wins':         len(wins),
+            'losses':       len(losses),
+            'win_rate':     win_rate,
+            'total_pnl':    round(total_pnl),
+            'avg_hold_days': avg_hold,
+            'max_win':      round(max_win),
+            'max_loss':     round(max_loss),
+            'stop_loss':    req.stop_loss,
+            'take_profit':  req.take_profit,
+            'trades':       trades,
+        }
+    except HTTPException: raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
