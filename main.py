@@ -934,7 +934,14 @@ def get_db():
     db_url = os.environ.get('DATABASE_URL')
     if not db_url:
         raise RuntimeError('DATABASE_URL 環境變數未設定')
-    return psycopg2.connect(db_url, sslmode='require')
+    # External URL 含 .render.com 需要 SSL；Internal URL 不需要
+    if 'render.com' in db_url:
+        return psycopg2.connect(db_url, sslmode='require')
+    else:
+        try:
+            return psycopg2.connect(db_url, sslmode='require')
+        except Exception:
+            return psycopg2.connect(db_url, sslmode='prefer')
 
 def init_db():
     """建立資料表（若不存在）"""
