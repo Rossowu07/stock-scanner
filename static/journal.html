@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>交易簿</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<script src="/static/lc.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js'"></script>
 <style>
 :root {
   --green:#1a7a4a;--green-light:#d4f1e4;
@@ -66,6 +67,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
 .ohlc-lbl{font-size:9px;color:var(--text-3)}
 .ohlc-val{font-size:12px;font-weight:600;margin-top:1px}
 
+/* ── 盤中走勢圖 ── */
+.intraday-section{margin-top:10px;padding-top:10px;border-top:1px solid var(--border-light)}
+.intraday-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.intraday-title{font-size:11px;font-weight:600;color:var(--text-3)}
+.intraday-meta{font-size:10px;color:var(--text-3)}
+.intraday-chart-wrap{position:relative;width:100%;height:130px}
+.intraday-vol-wrap{position:relative;width:100%;height:50px;margin-top:4px}
+.intraday-loading{text-align:center;padding:20px;font-size:12px;color:var(--text-3)}
 .si-empty{text-align:center;padding:40px 20px;color:var(--text-3)}
 .si-empty-icon{font-size:36px;display:block;margin-bottom:10px}
 
@@ -561,9 +570,142 @@ async function loadStockInfo(code) {
         ${Object.entries(sigs).map(([k,v])=>
           `<span class="sig-chip ${v?'on':'off'}">${v?'✅':'⬜'} ${k}</span>`).join('')}
       </div>
-      <div style="font-size:10px;color:var(--text-3)">資料為最近一個交易日</div>`;
+      <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">資料為最近一個交易日</div>
+      <div class="intraday-section">
+        <div class="intraday-header">
+          <span class="intraday-title">📈 盤中走勢（分鐘線）</span>
+          <span class="intraday-meta" id="intraday-meta">載入中...</span>
+        </div>
+        <div id="intraday-chart-wrap" class="intraday-chart-wrap">
+          <div class="intraday-loading">載入中...</div>
+        </div>
+        <div id="intraday-vol-wrap" class="intraday-vol-wrap"></div>
+      </div>`;
+
+    // 載入盤中走勢（非同步，不阻塞主資訊顯示）
+    loadIntraday(code);
   } catch(e) {
     console.warn('[si]', e.message);
+  }
+}
+
+let intradayCharts = [];
+
+async function loadIntraday(code) {
+  const token = getToken();
+  if (!token) return;
+  try {
+    const resp = await fetch(`/api/intraday/${code}?token=${encodeURIComponent(token)}`);
+    if (!resp.ok) throw new Error('API ' + resp.status);
+    const d = await resp.json();
+
+    const metaEl = document.getElementById('intraday-meta');
+    const wrapEl = document.getElementById('intraday-chart-wrap');
+    const volEl  = document.getElementById('intraday-vol-wrap');
+    if (!metaEl || !wrapEl) return;
+
+    if (!d.times || !d.times.length) {
+      metaEl.textContent = d.msg || '今日尚無資料';
+      wrapEl.innerHTML = '<div class="intraday-loading">非交易日或盤前，無分鐘資料</div>';
+      return;
+    }
+
+    metaEl.textContent = `${d.date} ${d.status || ''} · ${d.times.length} 筆`;
+
+    // 清除舊圖
+    intradayCharts.forEach(c => { try { c.remove(); } catch(e){} });
+    intradayCharts = [];
+
+    // 時間軸：把 HH:MM 轉成從基準秒起算的 Unix 時間戳
+    const BASE = 1700000000;
+    const toT  = hhmm => {
+      const [h, m] = hhmm.split(':').map(Number);
+      return BASE + h * 3600 + m * 60;
+    };
+
+    const LWC  = typeof LightweightCharts !== 'undefined' ? LightweightCharts : null;
+    if (!LWC) {
+      wrapEl.innerHTML = '<div class="intraday-loading">圖表庫載入中，請稍後重試</div>';
+      return;
+    }
+
+    // 價格 K 線圖
+    wrapEl.innerHTML = '';
+    const pChart = LWC.createChart(wrapEl, {
+      width:  wrapEl.clientWidth || 300,
+      height: 130,
+      layout: { background: { color: '#fff' }, textColor: '#888' },
+      grid:   { vertLines: { color: '#f0f0ee' }, horzLines: { color: '#f0f0ee' } },
+      timeScale: {
+        borderColor: '#e8e8e6',
+        timeVisible: true,
+        tickMarkFormatter: t => {
+          const diff = t - BASE;
+          const h = Math.floor(diff / 3600);
+          const m = Math.floor((diff % 3600) / 60);
+          return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+        }
+      },
+      rightPriceScale: { borderColor: '#e8e8e6' },
+      handleScroll: true,
+      handleScale:  true,
+    });
+
+    const candle = pChart.addCandlestickSeries({
+      upColor:         '#e74c3c', downColor:      '#2ecc71',
+      borderUpColor:   '#e74c3c', borderDownColor:'#2ecc71',
+      wickUpColor:     '#e74c3c', wickDownColor:  '#2ecc71',
+    });
+    candle.setData(d.times.map((t, i) => ({
+      time:  toT(t),
+      open:  d.open[i]  || d.close[i],
+      high:  d.high[i]  || d.close[i],
+      low:   d.low[i]   || d.close[i],
+      close: d.close[i],
+    })).filter(x => x.close != null));
+
+    // VWAP 線
+    if (d.vwap && d.vwap.length) {
+      const vwapSeries = pChart.addLineSeries({
+        color: '#f39c12', lineWidth: 1.5,
+        priceLineVisible: false, lastValueVisible: true, title: 'VWAP',
+      });
+      vwapSeries.setData(
+        d.times.map((t, i) => d.vwap[i] != null ? { time: toT(t), value: d.vwap[i] } : null)
+               .filter(Boolean)
+      );
+    }
+    pChart.timeScale().fitContent();
+    intradayCharts.push(pChart);
+
+    // 成交量圖
+    volEl.innerHTML = '';
+    const vChart = LWC.createChart(volEl, {
+      width:  volEl.clientWidth || 300,
+      height: 50,
+      layout: { background: { color: '#fff' }, textColor: '#888' },
+      grid:   { vertLines: { color: '#f0f0ee' }, horzLines: { color: '#f0f0ee' } },
+      timeScale: { visible: false },
+      rightPriceScale: { borderColor: '#e8e8e6' },
+    });
+    const validVols = d.vol.filter(v => v > 0);
+    const avgVol    = validVols.length ? validVols.reduce((a,b)=>a+b,0)/validVols.length : 1;
+    const volSeries = vChart.addHistogramSeries({ priceFormat: { type: 'volume' } });
+    volSeries.setData(
+      d.times.map((t, i) => d.vol[i] != null ? {
+        time:  toT(t),
+        value: d.vol[i],
+        color: d.vol[i] >= avgVol ? 'rgba(231,76,60,0.7)' : 'rgba(120,120,120,0.35)',
+      } : null).filter(Boolean)
+    );
+    vChart.timeScale().fitContent();
+    intradayCharts.push(vChart);
+
+  } catch(e) {
+    const metaEl = document.getElementById('intraday-meta');
+    const wrapEl = document.getElementById('intraday-chart-wrap');
+    if (metaEl) metaEl.textContent = '載入失敗';
+    if (wrapEl) wrapEl.innerHTML = `<div class="intraday-loading" style="color:var(--red)">⚠️ ${e.message}</div>`;
   }
 }
 
