@@ -1183,11 +1183,13 @@ function renderFundamentalTab(d, container) {
       <div style="overflow-x:auto">
         <table class="fund-table">
           <thead><tr>
-            <th>年度</th><th style="text-align:right">現金股利</th>
+            <th>年度</th><th>除息/除權日</th>
+            <th style="text-align:right">現金股利</th>
             <th style="text-align:right">股票股利</th><th style="text-align:right">合計</th>
           </tr></thead>
           <tbody>${divArr.map(r=>`<tr>
-            <td>${r.date.slice(0,4)}</td>
+            <td>${r.year || r.date.slice(0,4)}</td>
+            <td style="font-size:12px;color:var(--text-3)">${r.ex_date && r.ex_date !== 'nan' ? r.ex_date : '—'}</td>
             <td style="text-align:right;color:var(--green)">${r.cash > 0 ? r.cash : '—'}</td>
             <td style="text-align:right">${r.stock > 0 ? r.stock : '—'}</td>
             <td style="text-align:right;font-weight:600">${r.total > 0 ? r.total : '—'}</td>
@@ -1205,20 +1207,24 @@ function renderFundamentalTab(d, container) {
       <div style="overflow-x:auto">
         <table class="fund-table">
           <thead><tr>
-            <th>除息日</th><th style="text-align:right">現金股利</th>
-            <th style="text-align:right">股票股利</th><th style="text-align:right">填息率</th>
+            <th>除息/除權日</th><th style="text-align:right">類型</th>
+            <th style="text-align:right">金額</th>
+            <th style="text-align:right">除息前價</th><th style="text-align:right">除息後價</th>
+            <th style="text-align:right">填息率</th>
           </tr></thead>
           <tbody>${d.ex_dividend.slice().reverse().map(r=>`<tr>
             <td>${r.date}</td>
-            <td style="text-align:right">${r.cash_div > 0 ? r.cash_div : '—'}</td>
-            <td style="text-align:right">${r.stock_div > 0 ? r.stock_div : '—'}</td>
-            <td style="text-align:right;${r.fill_pct >= 100 ? 'color:var(--green);font-weight:600' : r.fill_pct > 0 ? 'color:#e67e22' : 'color:var(--red)'}">
-              ${r.fill_pct > 0 ? r.fill_pct + '%' : '未填息'}
+            <td style="text-align:right">${r.div_type || '—'}</td>
+            <td style="text-align:right;font-weight:600;color:var(--green)">${r.div_amt > 0 ? r.div_amt : '—'}</td>
+            <td style="text-align:right">${r.before_price > 0 ? r.before_price : '—'}</td>
+            <td style="text-align:right">${r.after_price  > 0 ? r.after_price  : '—'}</td>
+            <td style="text-align:right;${r.fill_pct >= 100 ? 'color:var(--green);font-weight:600' : r.fill_pct > 50 ? 'color:#e67e22' : r.fill_pct > 0 ? 'color:var(--red)' : ''}">
+              ${r.fill_pct > 0 ? r.fill_pct + '%' : '—'}
             </td>
           </tr>`).join('')}</tbody>
         </table>
       </div>
-      <div class="fund-hint" style="margin-top:6px">填息率 100% = 除息後已完整回補缺口。歷史填息能力強 = 除息後短線支撐較佳，有助維持股價。</div>
+      <div class="fund-hint" style="margin-top:6px">填息率：除息後股價回補缺口的比率。100% = 完整填息。歷史填息能力強，代表除息後短線支撐較佳。</div>
     </div>`;
   }
 
