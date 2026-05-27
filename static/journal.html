@@ -43,12 +43,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
             border-bottom:1px solid var(--border-light);flex-shrink:0}
 .half-body{flex:1;overflow-y:auto;padding:12px;
            -webkit-overflow-scrolling:touch}
-
-/* 下單表單：按鈕固定在底部 */
-.order-form-wrap{display:flex;flex-direction:column;min-height:100%}
-.order-form-fields{flex:1}
-.order-btn-wrap{position:sticky;bottom:0;background:var(--card);
-                padding:10px 0 4px;margin-top:8px}
+.half-footer{flex-shrink:0;padding:10px 12px;
+             border-top:1px solid var(--border-light);
+             background:var(--card)}
 
 /* ── 個股資訊面板 ── */
 .si-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
@@ -239,8 +236,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
     <div class="half-title">📝 模擬下單</div>
     <div class="half-body">
       <div id="alertOrder" style="display:none"></div>
-      <div class="order-form-wrap">
-      <div class="order-form-fields">
       <div class="order-seg">
         <button class="oseg active" onclick="setAction('buy',this)">買入</button>
         <button class="oseg" onclick="setAction('sell',this)">賣出</button>
@@ -331,11 +326,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
         </div>
       </div>
       <div id="fee-preview" class="fee-box" style="display:none"></div>
-      </div><!-- end order-form-fields -->
-      <div class="order-btn-wrap">
-        <button class="btn-order btn-buy" id="orderBtn" onclick="submitTrade()">確認買入</button>
-      </div>
-      </div><!-- end order-form-wrap -->
+    </div><!-- end half-body -->
+    <div class="half-footer">
+      <button class="btn-order btn-buy" id="orderBtn" onclick="submitTrade()">確認買入</button>
+    </div>
+  </div><!-- end right half -->
     </div>
   </div>
 </div>
