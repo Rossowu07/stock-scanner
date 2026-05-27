@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>交易簿</title>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+:root {
+  --green:#1a7a4a;--green-light:#d4f1e4;--green-mid:#97c459;
+  --red:#c0392b;--red-light:#fde8e8;
+  --yellow-light:#fef3cd;--yellow-text:#8a6200;
+  --bg:#f5f5f3;--card:#ffffff;
+  --border:#e8e8e6;--border-light:#f0f0ee;
+  --text:#1a1a1a;--text-2:#555;--text-3:#888;--text-4:#aaa;
+  --radius:12px;--radius-sm:8px;--shadow:0 1px 3px rgba(0,0,0,.08);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);font-size:14px;padding-bottom:60px}
+.topbar{background:var(--card);border-bottom:1px solid var(--border);padding:14px 16px 10px;position:sticky;top:0;z-index:100;display:flex;justify-content:space-between;align-items:center}
+.topbar h1{font-size:17px;font-weight:600}
+.topbar a{font-size:13px;color:var(--text-3);text-decoration:none;padding:6px 12px;border:1px solid var(--border);border-radius:var(--radius-sm)}
+.tabs-bar{display:flex;background:var(--card);border-bottom:1px solid var(--border);padding:0 12px}
+.tab{padding:12px 16px;font-size:13px;font-weight:500;color:var(--text-3);border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}
+.tab.active{color:var(--text);border-bottom-color:#3b82f6}
+.page{display:none;padding:12px}
+.page.active{display:block}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:12px;box-shadow:var(--shadow)}
+.card-title{font-size:12px;font-weight:600;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px}
+
+/* 統計摘要 */
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 8px;text-align:center}
+.stat-val{font-size:20px;font-weight:600}
+.stat-val.green{color:var(--green)}
+.stat-val.red{color:var(--red)}
+.stat-lbl{font-size:10px;color:var(--text-3);margin-top:2px}
+
+/* 表單 */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.form-field{display:flex;flex-direction:column;gap:4px}
+.form-field label{font-size:11px;color:var(--text-3);font-weight:500}
+.form-field input,.form-field select,.form-field textarea{padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;background:var(--bg);color:var(--text);outline:none;width:100%}
+.form-field input:focus,.form-field select:focus{border-color:var(--green)}
+.form-full{grid-column:1/-1}
+.btn{width:100%;padding:11px;font-size:14px;font-weight:600;border:none;border-radius:var(--radius-sm);cursor:pointer;margin-top:10px}
+.btn-buy{background:#1a7a4a;color:#fff}
+.btn-sell{background:#c0392b;color:#fff}
+.btn-run{background:var(--text);color:#fff}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn:active:not(:disabled){opacity:.8}
+.seg{display:flex;background:var(--bg);border-radius:var(--radius-sm);padding:3px;gap:2px;margin-bottom:12px}
+.seg-btn{flex:1;padding:7px 4px;font-size:13px;font-weight:500;border:none;background:transparent;color:var(--text-3);border-radius:6px;cursor:pointer;text-align:center}
+.seg-btn.active{background:var(--card);color:var(--text);box-shadow:var(--shadow)}
+
+/* 交易列表 */
+.trade-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px}
+.trade-card.buy{border-left:3px solid var(--green)}
+.trade-card.sell.win{border-left:3px solid var(--green)}
+.trade-card.sell.loss{border-left:3px solid var(--red)}
+.trade-card.backtest{border-left:3px solid #3b82f6}
+.tc-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px}
+.tc-name{font-size:15px;font-weight:600}
+.tc-date{font-size:11px;color:var(--text-3);margin-top:2px}
+.tc-right{text-align:right}
+.tc-price{font-size:16px;font-weight:600}
+.tc-type{font-size:11px;padding:2px 8px;border-radius:8px;font-weight:600;margin-bottom:3px;display:inline-block}
+.tc-type.buy{background:var(--green-light);color:var(--green)}
+.tc-type.sell{background:var(--red-light);color:var(--red)}
+.tc-meta{display:flex;gap:10px;font-size:11px;color:var(--text-3);flex-wrap:wrap}
+.tc-pnl{font-size:14px;font-weight:600}
+.tc-pnl.pos{color:var(--green)}
+.tc-pnl.neg{color:var(--red)}
+.signal-tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;background:var(--green-light);color:var(--green);margin:1px}
+.delete-btn{background:none;border:none;cursor:pointer;color:var(--text-4);font-size:16px;padding:4px;line-height:1}
+.delete-btn:hover{color:var(--red)}
+
+/* 回測結果 */
+.bt-summary{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px}
+.bt-card{border:1px solid var(--border-light);border-radius:var(--radius-sm);padding:10px 12px}
+.bt-lbl{font-size:11px;color:var(--text-3);margin-bottom:3px}
+.bt-val{font-size:18px;font-weight:600}
+.bt-trade{background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:6px;font-size:12px}
+.bt-buy{border-left:3px solid var(--green)}
+.bt-sell-win{border-left:3px solid var(--green)}
+.bt-sell-loss{border-left:3px solid var(--red)}
+.equity-wrap{height:200px;position:relative;margin-bottom:12px}
+
+/* 空狀態 */
+.empty{text-align:center;padding:40px 20px;color:var(--text-3);font-size:13px}
+.empty-icon{font-size:32px;display:block;margin-bottom:8px}
+
+/* Alert */
+.alert{padding:10px 14px;border-radius:var(--radius-sm);font-size:13px;margin-bottom:10px}
+.alert.ok{background:var(--green-light);color:var(--green)}
+.alert.err{background:var(--red-light);color:var(--red)}
+.alert.warn{background:var(--yellow-light);color:var(--yellow-text)}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>📒 交易簿</h1>
+  <a href="/">← 回掃描器</a>
+</div>
+
+<div class="tabs-bar">
+  <div class="tab active" onclick="switchPage('manual',this)">📝 模擬下單</div>
+  <div class="tab" onclick="switchPage('trades',this)">📋 交易記錄</div>
+  <div class="tab" onclick="switchPage('backtest',this)">🔬 歷史回測</div>
+  <div class="tab" onclick="switchPage('stats',this)">📊 績效統計</div>
+</div>
+
+<!-- ══ 模擬下單 ══ -->
+<div id="page-manual" class="page active">
+  <div class="card">
+    <div class="card-title">Token（用於查詢即時股價）</div>
+    <div style="display:flex;gap:8px">
+      <input type="password" id="tokenInput" placeholder="FinMind Token" autocomplete="off" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;background:var(--bg)">
+      <button onclick="loadToken()" style="padding:8px 14px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);cursor:pointer">載入</button>
+    </div>
+    <div id="tokenHint" style="font-size:11px;color:var(--text-3);margin-top:6px">與掃描器共用同一組 Token，勾選記住後自動帶入</div>
+  </div>
+
+  <div class="card">
+    <div class="seg">
+      <button class="seg-btn active" id="btn-buy" onclick="setAction('buy',this)">買入</button>
+      <button class="seg-btn" id="btn-sell" onclick="setAction('sell',this)">賣出</button>
+    </div>
+    <div id="alertManual" style="display:none"></div>
+    <div class="form-grid">
+      <div class="form-field">
+        <label>股票代號</label>
+        <input type="text" id="m-code" placeholder="例：2330" maxlength="6" oninput="fetchPrice()">
+      </div>
+      <div class="form-field">
+        <label>名稱</label>
+        <input type="text" id="m-name" placeholder="自動填入">
+      </div>
+      <div class="form-field">
+        <label>成交價格（元）</label>
+        <input type="number" id="m-price" placeholder="0.00" step="0.01" min="0">
+      </div>
+      <div class="form-field">
+        <label>張數</label>
+        <input type="number" id="m-shares" value="1" min="1" max="9999">
+      </div>
+      <div class="form-field">
+        <label>交易日期</label>
+        <input type="date" id="m-date">
+      </div>
+      <div class="form-field" id="sell-target-wrap" style="display:none">
+        <label>對應買入單</label>
+        <select id="m-close-id"><option value="">— 選擇買入單 —</option></select>
+      </div>
+      <div class="form-field form-full">
+        <label>備注（訊號/理由）</label>
+        <textarea id="m-note" rows="2" placeholder="例：MACD金叉 + 量能放大 + 外資買超"></textarea>
+      </div>
+    </div>
+    <div id="fee-preview" style="display:none;background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;color:var(--text-2);margin-top:8px"></div>
+    <button class="btn btn-buy" id="submitBtn" onclick="submitTrade()">確認買入</button>
+  </div>
+</div>
+
+<!-- ══ 交易記錄 ══ -->
+<div id="page-trades" class="page">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <div style="font-size:13px;font-weight:600">所有交易</div>
+    <div style="display:flex;gap:6px">
+      <select id="filterStatus" onchange="renderTrades()" style="font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg)">
+        <option value="all">全部</option>
+        <option value="open">持倉中</option>
+        <option value="closed">已平倉</option>
+        <option value="backtest">回測</option>
+      </select>
+    </div>
+  </div>
+  <div id="tradesList"></div>
+</div>
+
+<!-- ══ 歷史回測 ══ -->
+<div id="page-backtest" class="page">
+  <div class="card">
+    <div class="card-title">回測設定</div>
+    <div id="alertBacktest" style="display:none"></div>
+    <div class="form-grid">
+      <div class="form-field">
+        <label>股票代號</label>
+        <input type="text" id="bt-code" placeholder="例：2330">
+      </div>
+      <div class="form-field">
+        <label>張數</label>
+        <input type="number" id="bt-shares" value="1" min="1">
+      </div>
+      <div class="form-field">
+        <label>開始日期</label>
+        <input type="date" id="bt-start">
+      </div>
+      <div class="form-field">
+        <label>結束日期</label>
+        <input type="date" id="bt-end">
+      </div>
+      <div class="form-field">
+        <label>停損（%）</label>
+        <input type="number" id="bt-sl" value="7" min="1" max="50" step="0.5">
+      </div>
+      <div class="form-field">
+        <label>停利（%）</label>
+        <input type="number" id="bt-tp" value="15" min="1" max="100" step="0.5">
+      </div>
+    </div>
+    <div style="margin-top:10px">
+      <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;font-weight:600">買入觸發條件（勾選越多=越嚴格）</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="bt-pb" checked> 價格突破</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="bt-vs" checked> 量能放大</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="bt-mp" checked> MACD正值</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="bt-rs"> RSI強勢</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="bt-ma" checked> 均線多頭</label>
+      </div>
+      <div class="form-field" style="margin-top:8px">
+        <label>最少符合幾個條件才買入</label>
+        <input type="number" id="bt-min" value="3" min="1" max="5">
+      </div>
+    </div>
+    <div style="margin-top:10px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+        <input type="checkbox" id="bt-save"> 將回測交易存入交易簿
+      </label>
+    </div>
+    <button class="btn btn-run" id="btRunBtn" onclick="runBacktest()">▶ 開始回測</button>
+  </div>
+  <div id="btResult" style="display:none">
+    <div class="card">
+      <div class="card-title" id="btResultTitle">回測結果</div>
+      <div class="bt-summary" id="btSummary"></div>
+      <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:8px">資金曲線</div>
+      <div class="equity-wrap"><canvas id="equityChart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title">交易明細</div>
+      <div id="btTrades"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 績效統計 ══ -->
+<div id="page-stats" class="page">
+  <div class="stats-grid" id="statsGrid">
+    <div class="stat-card"><div class="stat-val" id="st-total">—</div><div class="stat-lbl">總交易次數</div></div>
+    <div class="stat-card"><div class="stat-val green" id="st-wr">—</div><div class="stat-lbl">勝率</div></div>
+    <div class="stat-card"><div class="stat-val" id="st-pnl">—</div><div class="stat-lbl">總損益（元）</div></div>
+    <div class="stat-card"><div class="stat-val" id="st-rr">—</div><div class="stat-lbl">盈虧比</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">詳細統計</div>
+    <div id="statsDetail"></div>
+  </div>
+  <div class="card">
+    <div class="card-title">持倉中</div>
+    <div id="openTrades"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<script>
+const TOKEN_KEY = 'finmind_token_v1';
+let currentAction = 'buy';
+let allTrades = [];
+let equityChartInst = null;
+
+// ── 初始化 ────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  // 設定今日日期
+  const today = new Date().toISOString().slice(0,10);
+  document.getElementById('m-date').value = today;
+  document.getElementById('bt-end').value = today;
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+  document.getElementById('bt-start').value = sixMonthsAgo.toISOString().slice(0,10);
+  // 自動帶入已儲存的 Token
+  loadToken();
+  loadAllTrades();
+  loadStats();
+  // 價格/張數變動時即時預覽費用
+  ['m-price','m-shares'].forEach(id =>
+    document.getElementById(id).addEventListener('input', previewFee));
+});
+
+function loadToken() {
+  const saved = localStorage.getItem(TOKEN_KEY);
+  if (saved) {
+    document.getElementById('tokenInput').value = saved;
+    document.getElementById('tokenHint').textContent = '✅ 已從掃描器帶入 Token';
+  }
+}
+
+function getToken() { return document.getElementById('tokenInput').value.trim(); }
+
+function switchPage(id, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+  document.getElementById('page-'+id).classList.add('active');
+  btn.classList.add('active');
+  if (id === 'trades') renderTrades();
+  if (id === 'stats')  loadStats();
+}
+
+// ── 模擬下單 ─────────────────────────────────────────
+function setAction(action, btn) {
+  currentAction = action;
+  document.querySelectorAll('.seg-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const submitBtn = document.getElementById('submitBtn');
+  submitBtn.textContent = action === 'buy' ? '確認買入' : '確認賣出';
+  submitBtn.className   = `btn btn-${action}`;
+  document.getElementById('sell-target-wrap').style.display = action === 'sell' ? 'flex' : 'none';
+  if (action === 'sell') populateBuyOptions();
+  previewFee();
+}
+
+function populateBuyOptions() {
+  const sel = document.getElementById('m-close-id');
+  const code = document.getElementById('m-code').value.trim();
+  const openBuys = allTrades.filter(t => t.action==='buy' && t.status==='open'
+    && (!code || t.code === code));
+  sel.innerHTML = '<option value="">— 選擇買入單 —</option>' +
+    openBuys.map(t => `<option value="${t.id}">[${t.date}] ${t.code} ${t.name} @${t.price} ×${t.shares}張</option>`).join('');
+}
+
+async function fetchPrice() {
+  const code = document.getElementById('m-code').value.trim();
+  if (code.length < 4) return;
+  const token = getToken();
+  if (!token) return;
+  try {
+    const today = new Date().toISOString().slice(0,10);
+    const past  = new Date(Date.now()-7*86400000).toISOString().slice(0,10);
+    const r = await fetch(`/api/chart/${code}?token=${encodeURIComponent(token)}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.close && d.close.length) {
+      const lastPrice = d.close.filter(v=>v!=null).pop();
+      document.getElementById('m-price').value = lastPrice;
+      previewFee();
+    }
+  } catch(e) {}
+  // 嘗試帶入名稱
+  if (currentAction === 'sell') populateBuyOptions();
+}
+
+function previewFee() {
+  const price  = parseFloat(document.getElementById('m-price').value) || 0;
+  const shares = parseInt(document.getElementById('m-shares').value)  || 0;
+  const isSell = currentAction === 'sell';
+  if (!price || !shares) { document.getElementById('fee-preview').style.display='none'; return; }
+  const amount = price * shares * 1000;
+  const fee    = Math.max(Math.round(amount * 0.001425), 20);
+  const tax    = isSell ? Math.round(amount * 0.003) : 0;
+  const net    = isSell ? amount - fee - tax : amount + fee;
+  document.getElementById('fee-preview').style.display = 'block';
+  document.getElementById('fee-preview').innerHTML =
+    `成交金額：<b>${amount.toLocaleString()}</b> 元 ／ 手續費：<b>${fee.toLocaleString()}</b> 元` +
+    (isSell ? ` ／ 交易稅：<b>${tax.toLocaleString()}</b> 元` : '') +
+    ` ／ 實付：<b>${net.toLocaleString()}</b> 元`;
+}
+
+async function submitTrade() {
+  const code   = document.getElementById('m-code').value.trim();
+  const name   = document.getElementById('m-name').value.trim() || code;
+  const price  = parseFloat(document.getElementById('m-price').value);
+  const shares = parseInt(document.getElementById('m-shares').value);
+  const date   = document.getElementById('m-date').value;
+  const note   = document.getElementById('m-note').value.trim();
+  const closeId= parseInt(document.getElementById('m-close-id').value) || null;
+
+  if (!code || !price || !shares || !date) {
+    showAlert('alertManual', '請填寫代號、價格、張數和日期', 'err'); return;
+  }
+
+  const body = {
+    code, name, action: currentAction,
+    price, shares, date, note,
+    trigger: 'manual',
+    close_id: currentAction === 'sell' ? closeId : null,
+  };
+
+  try {
+    document.getElementById('submitBtn').disabled = true;
+    const r = await fetch('/api/journal/trade', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error('API 錯誤');
+    const trade = await r.json();
+    showAlert('alertManual',
+      `✅ ${currentAction==='buy'?'買入':'賣出'} ${code} ${shares}張 @${price}` +
+      (trade.pnl != null ? ` ／ 損益：${trade.pnl > 0 ? '+' : ''}${trade.pnl.toLocaleString()} 元（${trade.pnl_pct}%）` : ''),
+      trade.pnl != null && trade.pnl < 0 ? 'err' : 'ok');
+    await loadAllTrades();
+    // 清空欄位
+    document.getElementById('m-price').value = '';
+    document.getElementById('m-note').value  = '';
+    document.getElementById('fee-preview').style.display = 'none';
+  } catch(e) {
+    showAlert('alertManual', '提交失敗：' + e.message, 'err');
+  } finally {
+    document.getElementById('submitBtn').disabled = false;
+  }
+}
+
+// ── 交易記錄 ─────────────────────────────────────────
+async function loadAllTrades() {
+  const r = await fetch('/api/journal/trades');
+  const d = await r.json();
+  allTrades = (d.trades || []).reverse();  // 最新在前
+}
+
+function renderTrades() {
+  const filter = document.getElementById('filterStatus').value;
+  let list = allTrades;
+  if (filter === 'open')     list = list.filter(t => t.status==='open' && t.trigger!=='backtest');
+  if (filter === 'closed')   list = list.filter(t => t.status==='closed' && t.trigger!=='backtest');
+  if (filter === 'backtest') list = list.filter(t => t.trigger==='backtest');
+
+  const container = document.getElementById('tradesList');
+  if (!list.length) {
+    container.innerHTML = '<div class="empty"><span class="empty-icon">📋</span>尚無交易記錄</div>';
+    return;
+  }
+  container.innerHTML = list.map(t => {
+    const isBuy    = t.action === 'buy';
+    const isWin    = t.pnl > 0;
+    const cardCls  = t.trigger === 'backtest' ? 'trade-card backtest'
+      : isBuy ? 'trade-card buy' : `trade-card sell ${isWin?'win':'loss'}`;
+    const pnlHtml  = t.pnl != null
+      ? `<div class="tc-pnl ${t.pnl>=0?'pos':'neg'}">${t.pnl>=0?'+':''}${t.pnl.toLocaleString()} 元（${t.pnl_pct}%）</div>` : '';
+    const sigs = (t.signals||[]).map(s=>`<span class="signal-tag">${s}</span>`).join('');
+    return `<div class="${cardCls}">
+      <div class="tc-top">
+        <div>
+          <span class="tc-type ${isBuy?'buy':'sell'}">${isBuy?'買入':'賣出'}</span>
+          <div class="tc-name">${t.code} ${t.name}</div>
+          <div class="tc-date">${t.date} ${t.trigger==='backtest'?'・回測':''}${t.exit_reason?'・'+t.exit_reason:''}</div>
+        </div>
+        <div class="tc-right">
+          <div class="tc-price">${t.price.toLocaleString()} 元</div>
+          <div style="font-size:12px;color:var(--text-3)">${t.shares}張 ・ ${(t.shares*1000*t.price).toLocaleString()}元</div>
+          ${pnlHtml}
+        </div>
+      </div>
+      ${sigs ? `<div style="margin-top:4px">${sigs}</div>` : ''}
+      <div class="tc-meta" style="margin-top:6px">
+        <span>手續費 ${(t.fee||0).toLocaleString()}</span>
+        ${t.tax ? `<span>交易稅 ${t.tax.toLocaleString()}</span>` : ''}
+        ${t.note ? `<span>📝 ${t.note}</span>` : ''}
+        ${t.hold_days ? `<span>持有 ${t.hold_days} 天</span>` : ''}
+        <button class="delete-btn" onclick="deleteTrade(${t.id})" title="刪除">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function deleteTrade(id) {
+  if (!confirm('確定刪除這筆交易？')) return;
+  await fetch(`/api/journal/trade/${id}`, {method:'DELETE'});
+  await loadAllTrades();
+  renderTrades();
+  loadStats();
+}
+
+// ── 歷史回測 ─────────────────────────────────────────
+async function runBacktest() {
+  const token = getToken();
+  if (!token) { showAlert('alertBacktest','請先在模擬下單頁面輸入 Token','err'); return; }
+  const code  = document.getElementById('bt-code').value.trim();
+  const start = document.getElementById('bt-start').value;
+  const end   = document.getElementById('bt-end').value;
+  if (!code || !start || !end) { showAlert('alertBacktest','請填寫股票代號和日期區間','err'); return; }
+
+  const btn = document.getElementById('btRunBtn');
+  btn.disabled = true; btn.textContent = '回測中...';
+  document.getElementById('btResult').style.display = 'none';
+
+  try {
+    const body = {
+      token, code,
+      start_date: start, end_date: end,
+      shares:       parseInt(document.getElementById('bt-shares').value) || 1,
+      stop_loss:    parseFloat(document.getElementById('bt-sl').value) || 7,
+      take_profit:  parseFloat(document.getElementById('bt-tp').value) || 15,
+      need_price_breakout: document.getElementById('bt-pb').checked,
+      need_volume_surge:   document.getElementById('bt-vs').checked,
+      need_macd_positive:  document.getElementById('bt-mp').checked,
+      need_rsi_strong:     document.getElementById('bt-rs').checked,
+      need_ma_bullish:     document.getElementById('bt-ma').checked,
+      min_signals:  parseInt(document.getElementById('bt-min').value) || 3,
+    };
+    const r = await fetch('/api/backtest', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) { const e=await r.json(); throw new Error(e.detail||'API錯誤'); }
+    const d = await r.json();
+    renderBacktestResult(d);
+
+    // 若勾選存入交易簿
+    if (document.getElementById('bt-save').checked && d.trades.length) {
+      for (const t of d.trades) {
+        await fetch('/api/journal/trade', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            code: t.code, name: t.code, action: t.type,
+            price: t.price, shares: t.shares, date: t.date,
+            trigger: 'backtest', signals: t.signals||[],
+            note: t.exit_reason || '',
+            close_id: null,
+          })
+        });
+      }
+      await loadAllTrades();
+      showAlert('alertBacktest', `✅ ${d.trades.length} 筆回測交易已存入交易簿`, 'ok');
+    }
+  } catch(e) {
+    showAlert('alertBacktest', '回測失敗：' + e.message, 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = '▶ 開始回測';
+  }
+}
+
+function renderBacktestResult(d) {
+  document.getElementById('btResultTitle').textContent =
+    `${d.code} 回測結果（${d.start_date} ～ ${d.end_date}）`;
+
+  const pnlColor = d.total_pnl >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+  document.getElementById('btSummary').innerHTML = `
+    <div class="bt-card"><div class="bt-lbl">交易次數</div><div class="bt-val">${d.total_trades}</div></div>
+    <div class="bt-card"><div class="bt-lbl">勝率</div><div class="bt-val" style="${d.win_rate>=50?'color:var(--green)':'color:var(--red)'">${d.win_rate}%</div></div>
+    <div class="bt-card"><div class="bt-lbl">總損益</div><div class="bt-val" style="${pnlColor}">${d.total_pnl>=0?'+':''}${d.total_pnl.toLocaleString()} 元</div></div>
+    <div class="bt-card"><div class="bt-lbl">平均持有天數</div><div class="bt-val">${d.avg_hold_days} 天</div></div>
+    <div class="bt-card"><div class="bt-lbl">最大單筆獲利</div><div class="bt-val" style="color:var(--green)">+${d.max_win.toLocaleString()}</div></div>
+    <div class="bt-card"><div class="bt-lbl">最大單筆虧損</div><div class="bt-val" style="color:var(--red)">${d.max_loss.toLocaleString()}</div></div>
+    <div class="bt-card"><div class="bt-lbl">獲利次數</div><div class="bt-val" style="color:var(--green)">${d.wins}</div></div>
+    <div class="bt-card"><div class="bt-lbl">虧損次數</div><div class="bt-val" style="color:var(--red)">${d.losses}</div></div>`;
+
+  // 資金曲線
+  const sells = d.trades.filter(t=>t.type==='sell');
+  if (sells.length > 0) {
+    let cumPnl = 0;
+    const labels = sells.map(t => t.date);
+    const data   = sells.map(t => { cumPnl += t.pnl; return cumPnl; });
+    if (equityChartInst) equityChartInst.destroy();
+    const ctx = document.getElementById('equityChart').getContext('2d');
+    equityChartInst = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: '累積損益（元）',
+          data,
+          borderColor: cumPnl >= 0 ? '#1a7a4a' : '#c0392b',
+          borderWidth: 2,
+          pointRadius: 3,
+          fill: true,
+          backgroundColor: cumPnl >= 0 ? 'rgba(26,122,74,0.08)' : 'rgba(192,57,43,0.08)',
+          tension: 0.3,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { font: { size: 10 }, color: '#888' }, grid: { display: false } },
+          y: { ticks: { font: { size: 10 }, color: '#888',
+               callback: v => v >= 0 ? `+${v.toLocaleString()}` : v.toLocaleString() },
+               grid: { color: 'rgba(0,0,0,0.05)' } }
+        }
+      }
+    });
+  }
+
+  // 交易明細
+  const sells2 = d.trades.filter(t => t.type === 'sell');
+  document.getElementById('btTrades').innerHTML = sells2.length === 0
+    ? '<div class="empty"><span class="empty-icon">🔍</span>此區間沒有觸發買入訊號</div>'
+    : sells2.map(t => {
+        const isWin = t.pnl > 0;
+        return `<div class="bt-trade ${isWin ? 'bt-sell-win' : 'bt-sell-loss'}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start">
+            <div>
+              <strong>買入</strong> ${t.buy_date} @${t.buy_price}
+              → <strong>賣出</strong> ${t.date} @${t.price}
+              <span style="margin-left:6px;font-size:11px;color:var(--text-3)">${t.exit_reason}</span>
+            </div>
+            <div style="text-align:right;font-weight:600;${isWin?'color:var(--green)':'color:var(--red)'}">
+              ${t.pnl>=0?'+':''}${t.pnl.toLocaleString()} 元<br>
+              <span style="font-size:11px">${t.pnl_pct}% ・ ${t.hold_days}天</span>
+            </div>
+          </div>
+          ${t.signals && t.signals.length ? `<div style="margin-top:4px">${t.signals.map(s=>`<span class="signal-tag">${s}</span>`).join('')}</div>` : ''}
+        </div>`;
+      }).join('');
+
+  document.getElementById('btResult').style.display = 'block';
+  document.getElementById('btResult').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── 績效統計 ─────────────────────────────────────────
+async function loadStats() {
+  const r = await fetch('/api/journal/stats');
+  const s = await r.json();
+  document.getElementById('st-total').textContent = s.total_trades;
+  document.getElementById('st-wr').textContent    = s.win_rate + '%';
+  const pnlEl = document.getElementById('st-pnl');
+  pnlEl.textContent = (s.total_pnl >= 0 ? '+' : '') + s.total_pnl.toLocaleString();
+  pnlEl.className   = 'stat-val ' + (s.total_pnl >= 0 ? 'green' : 'red');
+  document.getElementById('st-rr').textContent = s.rr_ratio + 'x';
+
+  document.getElementById('statsDetail').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:13px">
+      <div style="padding:8px;background:var(--bg);border-radius:6px">獲利次數<br><strong style="color:var(--green)">${s.wins} 次</strong></div>
+      <div style="padding:8px;background:var(--bg);border-radius:6px">虧損次數<br><strong style="color:var(--red)">${s.losses} 次</strong></div>
+      <div style="padding:8px;background:var(--bg);border-radius:6px">平均獲利<br><strong style="color:var(--green)">+${s.avg_win.toLocaleString()} 元</strong></div>
+      <div style="padding:8px;background:var(--bg);border-radius:6px">平均虧損<br><strong style="color:var(--red)">${s.avg_loss.toLocaleString()} 元</strong></div>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--text-3)">
+      盈虧比 ${s.rr_ratio}x：每虧損1元，平均獲利 ${s.rr_ratio} 元。建議盈虧比 ≥ 1.5x。
+    </div>`;
+
+  // 持倉中
+  if (!allTrades.length) await loadAllTrades();
+  const open = allTrades.filter(t => t.status==='open' && t.trigger!=='backtest');
+  document.getElementById('openTrades').innerHTML = open.length === 0
+    ? '<div style="font-size:13px;color:var(--text-3);padding:8px 0">目前無持倉</div>'
+    : open.map(t => `
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border-light);font-size:13px">
+        <div><strong>${t.code} ${t.name}</strong><br><span style="font-size:11px;color:var(--text-3)">${t.date} 買入 @${t.price} ×${t.shares}張</span></div>
+        <div style="text-align:right;color:var(--text-3);font-size:12px">成本 ${(t.price*t.shares*1000+t.fee).toLocaleString()} 元</div>
+      </div>`).join('');
+}
+
+// ── 工具 ─────────────────────────────────────────────
+function showAlert(elId, msg, type) {
+  const el = document.getElementById(elId);
+  el.style.display = 'block';
+  el.className = `alert ${type}`;
+  el.textContent = msg;
+  setTimeout(() => { el.style.display = 'none'; }, 5000);
+}
+</script>
+</body>
+</html>
