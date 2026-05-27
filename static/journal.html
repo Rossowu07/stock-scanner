@@ -285,9 +285,34 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
           <label>交易日期</label>
           <input id="m-date" type="date">
         </div>
+        <div class="ff">
+          <label>成交時間（精確到秒）</label>
+          <input id="m-time" type="time" step="1" placeholder="09:30:00">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="ff">
+          <label>手續費折扣（預設6折）</label>
+          <select id="m-fee-discount" onchange="previewFee()">
+            <option value="1.0">無折扣（1折）</option>
+            <option value="0.8">8折</option>
+            <option value="0.6" selected>6折（常見網路券商）</option>
+            <option value="0.5">5折</option>
+            <option value="0.38">3.8折</option>
+            <option value="0.28">2.8折</option>
+          </select>
+        </div>
         <div class="ff" id="close-id-wrap" style="display:none">
           <label>對應買入單</label>
           <select id="m-close-id"><option value="">— 選擇 —</option></select>
+        </div>
+      </div>
+      <div class="form-row" id="daytrade-wrap" style="display:none">
+        <div class="ff">
+          <label style="display:flex;align-items:center;gap:6px">
+            <input type="checkbox" id="m-daytrade" onchange="previewFee()">
+            當沖（賣出稅率 0.15%，減半）
+          </label>
         </div>
       </div>
       <div class="form-row">
@@ -424,7 +449,9 @@ let currentDrawer = null;
 // ── 初始化 ────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
   const today = new Date().toISOString().slice(0,10);
+  const now   = new Date().toTimeString().slice(0,8);
   document.getElementById('m-date').value   = today;
+  document.getElementById('m-time').value   = now;
   document.getElementById('bt-end').value   = today;
   const sixAgo = new Date();
   sixAgo.setMonth(sixAgo.getMonth()-6);
@@ -748,7 +775,8 @@ function setAction(action, btn) {
   const ob = document.getElementById('orderBtn');
   ob.textContent = action==='buy' ? '確認買入' : '確認賣出';
   ob.className = `btn-order btn-${action}`;
-  document.getElementById('close-id-wrap').style.display = action==='sell' ? 'flex':'none';
+  document.getElementById('close-id-wrap').style.display   = action==='sell' ? 'flex':'none';
+  document.getElementById('daytrade-wrap').style.display    = action==='sell' ? 'block':'none';
   if (action==='sell') populateBuyOptions();
   previewFee();
 }
@@ -761,49 +789,73 @@ function populateBuyOptions() {
     open.map(t=>`<option value="${t.id}">[${t.date}] ${t.code} @${t.price} ×${t.shares}張</option>`).join('');
 }
 
+function getFeeParams() {
+  const discount  = parseFloat(document.getElementById('m-fee-discount').value) || 0.6;
+  const isDaytrade= currentAction==='sell' && document.getElementById('m-daytrade')?.checked;
+  const feeRate   = 0.001425 * discount;
+  const taxRate   = isDaytrade ? 0.0015 : 0.003;
+  return { feeRate, taxRate, isDaytrade, discount };
+}
+
 function previewFee() {
   const price  = parseFloat(document.getElementById('m-price').value)||0;
   const shares = parseInt(document.getElementById('m-shares').value)||0;
   const isSell = currentAction==='sell';
   const el = document.getElementById('fee-preview');
   if (!price||!shares) { el.style.display='none'; return; }
+  const { feeRate, taxRate, isDaytrade, discount } = getFeeParams();
   const amt = price*shares*1000;
-  const fee = Math.max(Math.round(amt*0.001425),20);
-  const tax = isSell ? Math.round(amt*0.003) : 0;
+  const fee = Math.max(Math.round(amt*feeRate), 20);
+  const tax = isSell ? Math.round(amt*taxRate) : 0;
   const net = isSell ? amt-fee-tax : amt+fee;
   el.style.display='block';
-  el.innerHTML = `成交 <b>${amt.toLocaleString()}</b> ／ 手續費 <b>${fee.toLocaleString()}</b>`+
-    (isSell?` ／ 交易稅 <b>${tax.toLocaleString()}</b>`:'')+
+  const discountLabel = discount < 1 ? `（${(discount*10).toFixed(1)}折）` : '';
+  el.innerHTML = `成交 <b>${amt.toLocaleString()}</b> ／ 手續費 <b>${fee.toLocaleString()}</b>${discountLabel}`+
+    (isSell?` ／ 交易稅 <b>${tax.toLocaleString()}</b>${isDaytrade?' <span style="color:var(--green)">[當沖減半]</span>':''}`:'')+
     ` ／ 實付 <b>${net.toLocaleString()}</b> 元`;
 }
 
 async function submitTrade() {
-  const code   = document.getElementById('m-code').value.trim();
-  const name   = document.getElementById('m-name').value.trim()||code;
-  const price  = parseFloat(document.getElementById('m-price').value);
-  const shares = parseInt(document.getElementById('m-shares').value);
-  const date   = document.getElementById('m-date').value;
-  const note   = document.getElementById('m-note').value.trim();
-  const closeId= parseInt(document.getElementById('m-close-id').value)||null;
+  const code      = document.getElementById('m-code').value.trim();
+  const name      = document.getElementById('m-name').value.trim()||code;
+  const price     = parseFloat(document.getElementById('m-price').value);
+  const shares    = parseInt(document.getElementById('m-shares').value);
+  const date      = document.getElementById('m-date').value;
+  const time      = document.getElementById('m-time').value || '';
+  const note      = document.getElementById('m-note').value.trim();
+  const closeId   = parseInt(document.getElementById('m-close-id').value)||null;
+  const discount  = parseFloat(document.getElementById('m-fee-discount').value)||0.6;
+  const isDaytrade= currentAction==='sell' && document.getElementById('m-daytrade')?.checked;
   if (!code||!price||!shares||!date) {
     showAlert('alertOrder','請填寫代號、價格、張數、日期','err'); return;
   }
   const btn = document.getElementById('orderBtn');
   btn.disabled = true;
   try {
+    const datetime = time ? `${date} ${time}` : date;
     const r = await fetch('/api/journal/trade', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({code,name,action:currentAction,price,shares,date,note,
-                            trigger:'manual',close_id:currentAction==='sell'?closeId:null})
+      body: JSON.stringify({
+        code, name, action: currentAction, price, shares,
+        date: datetime,   // 含時間的完整字串
+        note, trigger:'manual',
+        close_id: currentAction==='sell' ? closeId : null,
+        fee_discount: discount,
+        is_daytrade:  isDaytrade,
+      })
     });
     if (!r.ok) throw new Error((await r.json()).detail||'API錯誤');
     const t = await r.json();
-    const msg = `✅ ${currentAction==='buy'?'買入':'賣出'} ${code} ${shares}張 @${price}`+
+    const msg = `✅ ${currentAction==='buy'?'買入':'賣出'} ${code} ${shares}張 @${price} ${time}`+
+      (isDaytrade?' [當沖]':'')+
       (t.pnl!=null?` ／ 損益 ${t.pnl>=0?'+':''}${Math.round(t.pnl).toLocaleString()} 元（${t.pnl_pct}%）`:'');
-    showAlert('alertOrder', msg, t.pnl<0?'err':'ok');
+    showAlert('alertOrder', msg, t.pnl!=null && t.pnl<0?'err':'ok');
+    // 更新時間為當前時間
+    document.getElementById('m-time').value = new Date().toTimeString().slice(0,8);
     document.getElementById('m-price').value='';
     document.getElementById('m-note').value='';
     document.getElementById('fee-preview').style.display='none';
+    if (document.getElementById('m-daytrade')) document.getElementById('m-daytrade').checked=false;
     await loadAllTrades();
     renderTrades();
   } catch(e) {
