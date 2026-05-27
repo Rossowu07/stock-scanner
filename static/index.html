@@ -578,6 +578,7 @@ function renderList() {
         <div class="sc-right">
           <div class="sc-price">${r.price.toFixed(2)}</div>
           <div class="sc-change ${changeCls}">${changeStr}</div>
+          <a href="/journal?code=${r.code}&name=${encodeURIComponent(r.name)}" target="_blank" onclick="event.stopPropagation()" style="display:inline-block;margin-top:4px;font-size:10px;padding:2px 7px;background:var(--text);color:#fff;border-radius:4px;text-decoration:none">下單</a>
         </div>
       </div>
       <div class="sc-bottom">
