@@ -446,6 +446,26 @@ async def get_chart(code: str, token: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
+@app.get("/api/debug/dividend/{code}")
+async def debug_dividend(code: str, token: str):
+    """診斷用：直接回傳股利政策和除權除息的原始資料"""
+    today = datetime.today()
+    y     = today.year
+    result = {}
+    for dataset in ['TaiwanStockDividend', 'TaiwanStockDividendResult']:
+        try:
+            d = finmind_get(dataset, code, f"{y-3}-01-01", today.strftime('%Y-%m-%d'), token)
+            rows = d.get('data', [])
+            result[dataset] = {
+                'msg':     d.get('msg'),
+                'count':   len(rows),
+                'columns': list(rows[0].keys()) if rows else [],
+                'sample':  rows[-3:] if rows else [],   # 最近3筆原始資料
+            }
+        except Exception as e:
+            result[dataset] = {'error': str(e)}
+    return result
+
 @app.get("/api/fundamental/{code}")
 async def get_fundamental(code: str, token: str):
     """基本面資料：PER/PBR/殖利率、月營收、財務指標、股利政策、除權息、重要日程"""
