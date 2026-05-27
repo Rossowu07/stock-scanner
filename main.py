@@ -1093,8 +1093,6 @@ async def add_trade(t: TradeIn):
                 pnl_pct      = p['pnl_pct']
                 buy_price_ref= buy['price']
                 buy_date_ref = buy['date']
-                cur.execute("UPDATE trades SET status='closed', close_id=currval('trades_id_seq') WHERE id=%s",
-                            (t.close_id,))
 
         cur.execute("""
             INSERT INTO trades
@@ -1111,6 +1109,13 @@ async def add_trade(t: TradeIn):
               buy_price_ref, buy_date_ref,
               discount, is_daytrade))
         trade = row_to_dict(cur.fetchone())
+
+        # 賣出成功後更新對應買入單狀態
+        if t.action == 'sell' and t.close_id:
+            cur.execute(
+                "UPDATE trades SET status='closed', close_id=%s WHERE id=%s",
+                (trade['id'], t.close_id)
+            )
         conn.commit(); cur.close(); conn.close()
         return trade
     except Exception as e:
