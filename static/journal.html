@@ -562,7 +562,18 @@ function onCodeInput() {
 
 async function loadStockInfo(code) {
   const token = getToken();
-  if (!token) return;
+  if (!token) {
+    document.getElementById('siBody').innerHTML = `
+      <div class="si-empty">
+        <span class="si-empty-icon">🔑</span>
+        需要 Token 才能載入個股資訊<br>
+        <span style="font-size:11px">Token 已從掃描器自動帶入，若無請先至掃描器驗證</span>
+      </div>`;
+    return;
+  }
+  // 顯示載入中
+  document.getElementById('siBody').innerHTML =
+    `<div class="si-empty"><span style="font-size:24px">⏳</span><br>載入 ${code} 資料中...</div>`;
   try {
     const r = await fetch(`/api/chart/${code}?token=${encodeURIComponent(token)}`);
     if (!r.ok) return;
@@ -661,6 +672,13 @@ async function loadStockInfo(code) {
     loadIntraday(code);
   } catch(e) {
     console.warn('[si]', e.message);
+    const siBody = document.getElementById('siBody');
+    if (siBody) siBody.innerHTML = `
+      <div class="si-empty">
+        <span class="si-empty-icon">⚠️</span>
+        載入失敗：${e.message}<br>
+        <span style="font-size:11px">請確認代號正確且 Token 有效</span>
+      </div>`;
   }
 }
 
