@@ -1127,10 +1127,13 @@ async def delete_trade(trade_id: int):
     try:
         conn = get_db()
         cur  = conn.cursor()
+        # 先清除其他記錄對此 id 的 close_id 參照，再刪除
+        cur.execute("UPDATE trades SET close_id=NULL WHERE close_id=%s", (trade_id,))
         cur.execute("DELETE FROM trades WHERE id=%s", (trade_id,))
         conn.commit(); cur.close(); conn.close()
         return {"ok": True}
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/journal/stats")
