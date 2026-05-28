@@ -507,6 +507,10 @@ let equityInst    = null;
 let refPrices     = {};
 let currentDrawer = null;
 
+function getToken() {
+  return localStorage.getItem(TOKEN_KEY) || '';
+}
+
 // ── 初始化 ────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
   const today = new Date().toISOString().slice(0,10);
