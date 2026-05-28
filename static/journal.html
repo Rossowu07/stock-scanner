@@ -659,11 +659,11 @@ async function loadIntraday(code) {
     intradayCharts.forEach(c => { try { c.remove(); } catch(e){} });
     intradayCharts = [];
 
-    // 時間軸：把 HH:MM 轉成從基準秒起算的 Unix 時間戳
-    const BASE = 1700000000;
-    const toT  = hhmm => {
+    // 時間軸：把 HH:MM + 日期 轉成真實 Unix timestamp（台灣時間 UTC+8）
+    const toT = (hhmm) => {
       const [h, m] = hhmm.split(':').map(Number);
-      return BASE + h * 3600 + m * 60;
+      const dt = new Date(`${d.date}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00+08:00`);
+      return Math.floor(dt.getTime() / 1000);
     };
 
     const LWC  = typeof LightweightCharts !== 'undefined' ? LightweightCharts : null;
@@ -682,12 +682,7 @@ async function loadIntraday(code) {
       timeScale: {
         borderColor: '#e8e8e6',
         timeVisible: true,
-        tickMarkFormatter: t => {
-          const diff = t - BASE;
-          const h = Math.floor(diff / 3600);
-          const m = Math.floor((diff % 3600) / 60);
-          return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
-        }
+        secondsVisible: false,
       },
       rightPriceScale: { borderColor: '#e8e8e6' },
       handleScroll: true,
@@ -743,6 +738,21 @@ async function loadIntraday(code) {
     );
     vChart.timeScale().fitContent();
     intradayCharts.push(vChart);
+
+    // ── 同步兩張圖表時間軸 ────────────────────────────
+    let syncing = false;
+    pChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+      if (syncing || !range) return;
+      syncing = true;
+      vChart.timeScale().setVisibleLogicalRange(range);
+      syncing = false;
+    });
+    vChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+      if (syncing || !range) return;
+      syncing = true;
+      pChart.timeScale().setVisibleLogicalRange(range);
+      syncing = false;
+    });
 
   } catch(e) {
     const metaEl = document.getElementById('intraday-meta');

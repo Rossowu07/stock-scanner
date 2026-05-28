@@ -886,51 +886,51 @@ function renderIntraday(d) {
     return;
   }
 
-  // LightweightCharts 需要嚴格遞增的 time；用「分鐘數」當 Unix timestamp 避免日期解析問題
-  // 把 "HH:MM" 轉成從 09:00 起算的秒數（UTC 基準 + 固定偏移讓它看起來合理）
-  const BASE = 1700000000; // 固定基準，只要遞增即可
-  const toT  = (hhmm) => {
+  // 把 "HH:MM" + 日期 轉成真實 Unix timestamp（UTC+8 台灣時間）
+  const toT = (hhmm) => {
     const [h, m] = hhmm.split(':').map(Number);
-    return BASE + h * 3600 + m * 60;
+    // d.date 格式 YYYY-MM-DD，組合成台灣時間的 UTC timestamp
+    const dt = new Date(`${d.date}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00+08:00`);
+    return Math.floor(dt.getTime() / 1000);
+  };
+
+  const chartBase = {
+    layout: { background: { color: '#ffffff' }, textColor: '#666' },
+    grid:   { vertLines: { color: '#f0f0ee' }, horzLines: { color: '#f0f0ee' } },
+    rightPriceScale: { borderColor: '#e8e8e6' },
+    handleScroll: true,
+    handleScale:  true,
   };
 
   // 價格 K 線圖
   const priceEl = document.getElementById('intradayPriceEl');
   priceEl.style.width = w + 'px';
-  const pOpts = {
-    ...makeChartOpts(w, 260),
+  const pChart = LWC.createChart(priceEl, {
+    ...chartBase,
+    width: w, height: 260,
     timeScale: {
       borderColor: '#e8e8e6',
       timeVisible: true,
-      tickMarkFormatter: (t) => {
-        const diff = t - BASE;
-        const h = Math.floor(diff / 3600);
-        const m = Math.floor((diff % 3600) / 60);
-        return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
-      }
+      secondsVisible: false,
     }
-  };
-  const pChart = LWC.createChart(priceEl, pOpts);
+  });
 
-  // K 線
   const candle = pChart.addCandlestickSeries({
     upColor: '#e74c3c', downColor: '#2ecc71',
     borderUpColor: '#e74c3c', borderDownColor: '#2ecc71',
     wickUpColor:   '#e74c3c', wickDownColor:   '#2ecc71',
   });
-  const candleData = d.times.map((t, i) => ({
+  candle.setData(d.times.map((t, i) => ({
     time:  toT(t),
     open:  d.open[i]  || d.close[i],
     high:  d.high[i]  || d.close[i],
     low:   d.low[i]   || d.close[i],
     close: d.close[i],
-  })).filter(x => x.close != null);
-  candle.setData(candleData);
+  })).filter(x => x.close != null));
 
-  // VWAP 線
   if (d.vwap && d.vwap.length) {
     const vwapLine = pChart.addLineSeries({
-      color: '#f39c12', lineWidth: 1.5, lineStyle: 0,
+      color: '#f39c12', lineWidth: 1.5,
       priceLineVisible: false, lastValueVisible: true, title: 'VWAP',
     });
     vwapLine.setData(
@@ -944,11 +944,11 @@ function renderIntraday(d) {
   // 成交量圖
   const volEl = document.getElementById('intradayVolEl');
   volEl.style.width = w + 'px';
-  const vOpts = {
-    ...makeChartOpts(w, 100),
-    timeScale: { visible: false },
-  };
-  const vChart = LWC.createChart(volEl, vOpts);
+  const vChart = LWC.createChart(volEl, {
+    ...chartBase,
+    width: w, height: 100,
+    timeScale: { visible: false, borderColor: '#e8e8e6' },
+  });
   const volSeries = vChart.addHistogramSeries({ priceFormat: { type: 'volume' } });
   const validVols = d.vol.filter(v => v > 0);
   const avgVol = validVols.length ? validVols.reduce((a,b)=>a+b,0) / validVols.length : 1;
@@ -961,6 +961,26 @@ function renderIntraday(d) {
   );
   vChart.timeScale().fitContent();
   activeCharts.push(vChart);
+
+  // ── 同步兩張圖表的時間軸 ────────────────────────────
+  let syncing = false;
+  pChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (syncing || !range) return;
+    syncing = true;
+    vChart.timeScale().setVisibleLogicalRange(range);
+    syncing = false;
+  });
+  vChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (syncing || !range) return;
+    syncing = true;
+    pChart.timeScale().setVisibleLogicalRange(range);
+    syncing = false;
+  });
+  // crosshair 同步
+  pChart.subscribeCrosshairMove(param => {
+    if (!param.time) return;
+    vChart.timeScale().applyOptions({ rightOffset: 0 });
+  });
 }
 
 function buildIndGrid(r) {
