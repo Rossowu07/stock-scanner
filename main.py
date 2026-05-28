@@ -354,6 +354,31 @@ def analyze(stock_id, df, cfg):
 @app.get("/")
 async def root(): return FileResponse("static/index.html")
 
+@app.get("/api/usage")
+async def get_usage(token: str):
+    """查詢 FinMind API 剩餘請求次數"""
+    try:
+        import json as _j, urllib.request, urllib.parse
+        safe_token = urllib.parse.quote(token, safe='')
+        url = f"https://api.web.finmindtrade.com/v2/user_info?token={safe_token}"
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "Mozilla/5.0"
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            d = _j.loads(resp.read().decode("utf-8"))
+        used  = d.get("user_count", 0)
+        limit = d.get("api_request_limit", 600)
+        remain = max(limit - used, 0)
+        return {
+            "used":    used,
+            "limit":   limit,
+            "remain":  remain,
+            "pct":     round(used / limit * 100, 1) if limit > 0 else 0,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/verify")
 async def verify_token(token: str):
     try:
