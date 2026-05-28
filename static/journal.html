@@ -659,10 +659,11 @@ async function loadIntraday(code) {
     intradayCharts.forEach(c => { try { c.remove(); } catch(e){} });
     intradayCharts = [];
 
-    // 時間軸：把 HH:MM + 日期 轉成真實 Unix timestamp（台灣時間 UTC+8）
+    // 後端已回傳台灣時間（UTC+8）的 HH:MM
+    // LightweightCharts 以 UTC 顯示，把台灣時間直接當 UTC 傳入，圖表顯示正確
     const toT = (hhmm) => {
       const [h, m] = hhmm.split(':').map(Number);
-      const dt = new Date(`${d.date}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00+08:00`);
+      const dt = new Date(`${d.date}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00Z`);
       return Math.floor(dt.getTime() / 1000);
     };
 
