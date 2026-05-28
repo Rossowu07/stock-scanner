@@ -243,29 +243,33 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   <div class="half">
     <div class="half-title">📝 模擬下單</div>
     <div class="half-body">
+      <!-- Token 狀態列 -->
+      <div id="tokenBar" style="padding:6px 10px;border-radius:var(--radius-sm);font-size:11px;margin-bottom:10px;background:var(--yellow-light);color:var(--yellow-text)">
+        ⚠️ 未偵測到 Token，請先至掃描器驗證並勾選「記住 Token」
+      </div>
       <div id="alertOrder" style="display:none"></div>
       <div class="order-seg">
         <button class="oseg active" onclick="setAction('buy',this)">買入</button>
         <button class="oseg" onclick="setAction('sell',this)">賣出</button>
       </div>
       <div class="form-row">
-        <div class="ff">
+        <div class="ff" style="position:relative">
           <label>股票代號</label>
-          <input id="m-code" type="text" placeholder="例：2330" maxlength="6"
-            oninput="onCodeInput()"
-            onblur="onCodeBlur()"
-            onchange="onCodeBlur()">
+          <input id="m-code" type="text" placeholder="輸入代號或名稱搜尋"
+            autocomplete="off" maxlength="10"
+            oninput="onCodeInput(this.value)"
+            onkeydown="onCodeKeydown(event)">
+          <div id="stockDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;
+            background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);
+            box-shadow:0 4px 12px rgba(0,0,0,.15);z-index:100;max-height:200px;overflow-y:auto">
+          </div>
         </div>
         <div class="ff">
           <label>名稱</label>
-          <input id="m-name" type="text" placeholder="自動填入">
+          <input id="m-name" type="text" placeholder="自動填入" readonly
+            style="background:var(--bg);color:var(--text-2)">
         </div>
       </div>
-      <button onclick="manualLoadStock()" style="width:100%;padding:8px;font-size:12px;
-        border:1px solid var(--border);border-radius:var(--radius-sm);
-        background:var(--bg);color:var(--text-2);cursor:pointer;margin-bottom:10px">
-        🔍 載入個股資訊
-      </button>
 
       <!-- 快速價格 -->
       <div class="price-sc-wrap">
@@ -526,6 +530,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   await loadAllTrades();
   initEntryRuleTable();
+  checkTokenBar();
 });
 
 // ── 抽屜控制 ─────────────────────────────────────────
@@ -560,23 +565,138 @@ function closeDrawer(id) {
 });
 
 // ── 代號輸入 ─────────────────────────────────────────
-let codeTimer = null;
-function onCodeInput() {
-  clearTimeout(codeTimer);
-  const code = document.getElementById('m-code').value.trim();
-  if (code.length >= 4) codeTimer = setTimeout(() => loadStockInfo(code), 800);
-  if (currentAction === 'sell') populateBuyOptions();
+// ── Token 檢查 ────────────────────────────────────────
+function checkTokenBar() {
+  const t = getToken();
+  const bar = document.getElementById('tokenBar');
+  if (!bar) return;
+  if (t) {
+    bar.style.background = 'var(--green-light)';
+    bar.style.color = 'var(--green)';
+    bar.textContent = '✅ Token 已載入，可以使用';
+    setTimeout(() => { bar.style.display = 'none'; }, 3000);
+  } else {
+    bar.style.display = 'block';
+  }
 }
 
-function onCodeBlur() {
-  clearTimeout(codeTimer);
-  const code = document.getElementById('m-code').value.trim();
-  if (code.length >= 4) loadStockInfo(code);
+// ── 股票名稱字典（前端搜尋用）────────────────────────
+const STOCK_DICT = {
+  '2330':'台積電','2317':'鴻海','2454':'聯發科','2412':'中華電','2308':'台達電',
+  '3008':'大立光','2382':'廣達','1303':'南亞','2881':'富邦金','2002':'中鋼',
+  '2886':'兆豐金','2882':'國泰金','2884':'玉山金','2303':'聯電','3045':'台灣大',
+  '2207':'和泰車','5880':'合庫金','2891':'中信金','2885':'元大金','2890':'永豐金',
+  '1301':'台塑','2357':'華碩','1101':'台泥','2327':'國巨','2345':'智邦',
+  '3711':'日月光','2379':'瑞昱','4904':'遠傳','2395':'研華','6505':'台塑化',
+  '1216':'統一','1326':'台化','2474':'可成','2059':'川湖','3443':'創意',
+  '6669':'緯穎','3231':'緯創','8046':'南電','2049':'上銀','6770':'力積電',
+  '5269':'祥碩','3034':'聯詠','4938':'和碩','2301':'光寶科','2609':'陽明',
+  '2615':'萬海','2887':'台新金','2888':'新光金','2889':'國票金','2801':'彰銀',
+  '1590':'亞德客','3533':'嘉澤','2385':'群光','2368':'金像電','2376':'技嘉',
+  '3481':'群創','5483':'中美晶','3044':'健鼎','6116':'彩晶','2347':'聯強',
+  '1402':'遠東新','3293':'鈊象','2408':'南科','2371':'大同','6278':'台表科',
+  '2492':'華新科','4966':'譜瑞-KY','4763':'材料-KY','6415':'矽力-KY','5871':'中租-KY',
+};
+
+let dropdownIdx = -1;
+
+function onCodeInput(val) {
+  const q = val.trim();
+  dropdownIdx = -1;
+
+  if (currentAction === 'sell') populateBuyOptions();
+
+  if (q.length === 0) {
+    hideDropdown(); return;
+  }
+
+  // 搜尋：代號前綴 OR 名稱包含
+  const matches = Object.entries(STOCK_DICT).filter(([code, name]) =>
+    code.startsWith(q) || name.includes(q)
+  ).slice(0, 8);
+
+  if (matches.length === 0) {
+    hideDropdown();
+    // 若已是完整4位代號，直接嘗試載入
+    if (q.length >= 4) triggerLoad(q);
+    return;
+  }
+
+  showDropdown(matches);
 }
+
+function showDropdown(matches) {
+  const dd = document.getElementById('stockDropdown');
+  dd.innerHTML = matches.map(([code, name], i) => `
+    <div class="dd-item" data-code="${code}" data-name="${name}"
+         onclick="selectStock('${code}','${name}')"
+         style="padding:9px 12px;cursor:pointer;display:flex;justify-content:space-between;
+                align-items:center;border-bottom:1px solid var(--border-light);font-size:13px">
+      <span><b>${code}</b> <span style="color:var(--text-2)">${name}</span></span>
+      <span style="font-size:10px;color:var(--text-3)">點選</span>
+    </div>`).join('');
+  dd.style.display = 'block';
+}
+
+function hideDropdown() {
+  const dd = document.getElementById('stockDropdown');
+  if (dd) dd.style.display = 'none';
+  dropdownIdx = -1;
+}
+
+function onCodeKeydown(e) {
+  const dd = document.getElementById('stockDropdown');
+  const items = dd.querySelectorAll('.dd-item');
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    dropdownIdx = Math.min(dropdownIdx + 1, items.length - 1);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    dropdownIdx = Math.max(dropdownIdx - 1, 0);
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (dropdownIdx >= 0 && items[dropdownIdx]) {
+      const item = items[dropdownIdx];
+      selectStock(item.dataset.code, item.dataset.name);
+    } else {
+      hideDropdown();
+      triggerLoad(document.getElementById('m-code').value.trim());
+    }
+    return;
+  } else if (e.key === 'Escape') {
+    hideDropdown(); return;
+  } else { return; }
+  // 更新高亮
+  items.forEach((el, i) => {
+    el.style.background = i === dropdownIdx ? 'var(--green-light)' : '';
+  });
+}
+
+function selectStock(code, name) {
+  document.getElementById('m-code').value = code;
+  document.getElementById('m-name').value = name;
+  hideDropdown();
+  triggerLoad(code);
+}
+
+let loadTimer = null;
+function triggerLoad(code) {
+  clearTimeout(loadTimer);
+  if (code.length >= 4) {
+    loadTimer = setTimeout(() => loadStockInfo(code), 300);
+  }
+}
+
+// 點擊其他地方關閉下拉
+document.addEventListener('click', e => {
+  if (!e.target.closest('#m-code') && !e.target.closest('#stockDropdown')) {
+    hideDropdown();
+  }
+});
 
 function manualLoadStock() {
   const code = document.getElementById('m-code').value.trim();
-  if (!code) { alert('請先輸入股票代號'); return; }
+  if (!code) { showAlert('alertOrder','請先輸入股票代號','err'); return; }
   loadStockInfo(code);
 }
 
@@ -586,14 +706,19 @@ async function loadStockInfo(code) {
     document.getElementById('siBody').innerHTML = `
       <div class="si-empty">
         <span class="si-empty-icon">🔑</span>
-        需要 Token 才能載入個股資訊<br>
-        <span style="font-size:11px">Token 已從掃描器自動帶入，若無請先至掃描器驗證</span>
+        未偵測到 Token<br>
+        <span style="font-size:11px">請先至掃描器勾選「記住 Token」後驗證</span>
       </div>`;
     return;
   }
+  // 自動填入股票名稱（字典優先）
+  const nameEl = document.getElementById('m-name');
+  if ((!nameEl.value || nameEl.value === '自動填入') && STOCK_DICT[code]) {
+    nameEl.value = STOCK_DICT[code];
+  }
   // 顯示載入中
   document.getElementById('siBody').innerHTML =
-    `<div class="si-empty"><span style="font-size:24px">⏳</span><br>載入 ${code} 資料中...</div>`;
+    `<div class="si-empty"><span style="font-size:28px">⏳</span><br>載入 ${code} 資料中...</div>`;
   try {
     const r = await fetch(`/api/chart/${code}?token=${encodeURIComponent(token)}`);
     if (!r.ok) return;
