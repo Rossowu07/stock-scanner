@@ -388,6 +388,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
     <div class="card">
       <div class="card-title">回測設定</div>
       <div id="alertBt" style="display:none"></div>
+
+      <!-- 基本設定 -->
       <div class="form-row">
         <div class="ff"><label>股票代號</label><input id="bt-code" type="text" placeholder="例：2330"></div>
         <div class="ff"><label>張數</label><input id="bt-shares" type="number" value="1" min="1"></div>
@@ -396,22 +398,53 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
         <div class="ff"><label>開始日期</label><input id="bt-start" type="date"></div>
         <div class="ff"><label>結束日期</label><input id="bt-end" type="date"></div>
       </div>
-      <div class="form-row">
-        <div class="ff"><label>停損 %</label><input id="bt-sl" type="number" value="7" step="0.5"></div>
-        <div class="ff"><label>停利 %</label><input id="bt-tp" type="number" value="15" step="0.5"></div>
+
+      <!-- 進場條件 -->
+      <div style="margin-top:10px">
+        <div style="font-size:11px;font-weight:600;color:var(--text-2);margin-bottom:5px">📥 進場條件</div>
+        <div style="font-size:10px;color:var(--text-3);margin-bottom:7px;line-height:1.7">
+          <span style="background:var(--green-light);color:var(--green);padding:1px 6px;border-radius:4px">必須</span> 必須成立 ／
+          <span style="background:#e8f4fd;color:#1a6a9a;padding:1px 6px;border-radius:4px">選用</span> 計分（達最少項數）／
+          <span style="background:var(--red-light);color:var(--red);padding:1px 6px;border-radius:4px">排除</span> 成立時拒絕進場
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="background:var(--bg)">
+            <th style="padding:5px 6px;text-align:left;color:var(--text-3);font-weight:500">指標</th>
+            <th style="padding:5px 2px;text-align:center;width:44px">必須</th>
+            <th style="padding:5px 2px;text-align:center;width:44px">選用</th>
+            <th style="padding:5px 2px;text-align:center;width:44px">排除</th>
+            <th style="padding:5px 2px;text-align:center;width:44px">忽略</th>
+          </tr></thead>
+          <tbody id="entryRuleTable"></tbody>
+        </table>
+        <div class="form-row" style="margin-top:8px">
+          <div class="ff">
+            <label>選用指標最少符合幾項才進場</label>
+            <input id="bt-min-optional" type="number" value="2" min="0" max="8">
+          </div>
+        </div>
       </div>
-      <div style="font-size:11px;color:var(--text-3);font-weight:600">觸發條件</div>
-      <div class="chk-grid">
-        <label class="chk-lbl"><input type="checkbox" id="bt-pb" checked> 價格突破</label>
-        <label class="chk-lbl"><input type="checkbox" id="bt-vs" checked> 量能放大</label>
-        <label class="chk-lbl"><input type="checkbox" id="bt-mp" checked> MACD正值</label>
-        <label class="chk-lbl"><input type="checkbox" id="bt-rs"> RSI強勢</label>
-        <label class="chk-lbl"><input type="checkbox" id="bt-ma" checked> 均線多頭</label>
+
+      <!-- 出場條件 -->
+      <div style="margin-top:10px">
+        <div style="font-size:11px;font-weight:600;color:var(--text-2);margin-bottom:7px">📤 出場條件（任一觸發即出場）</div>
+        <div class="form-row">
+          <div class="ff"><label>停損 %</label><input id="bt-sl" type="number" value="7" step="0.5" min="0.5"></div>
+          <div class="ff"><label>停利 %</label><input id="bt-tp" type="number" value="15" step="0.5" min="1"></div>
+        </div>
+        <div class="form-row">
+          <div class="ff"><label>持有天數上限（0=不限）</label><input id="bt-maxdays" type="number" value="0" min="0"></div>
+          <div class="ff"><label>冷卻天數（出場後等待）</label><input id="bt-cooldown" type="number" value="0" min="0"></div>
+        </div>
+        <div style="font-size:11px;font-weight:500;color:var(--text-3);margin:8px 0 5px">不佳指標出場</div>
+        <div class="form-row">
+          <div class="ff"><label>不佳指標達幾項（0=停用）</label><input id="bt-bad-sigs" type="number" value="0" min="0" max="8"></div>
+          <div class="ff"><label>連續幾天才出場</label><input id="bt-bad-window" type="number" value="1" min="1" max="10"></div>
+        </div>
+        <div style="font-size:10px;color:var(--text-3)">例：3項 × 2天 = 連續2天有3項以上指標惡化才出場</div>
       </div>
-      <div class="form-row" style="margin-top:8px">
-        <div class="ff"><label>最少符合幾個條件</label><input id="bt-min" type="number" value="3" min="1" max="5"></div>
-      </div>
-      <label class="chk-lbl" style="margin-top:6px"><input type="checkbox" id="bt-save"> 存入交易簿</label>
+
+      <label class="chk-lbl" style="margin-top:10px"><input type="checkbox" id="bt-save"> 存入交易簿</label>
       <button class="btn-run" id="btBtn" onclick="runBacktest()">▶ 開始回測</button>
     </div>
     <div id="btResult" style="display:none">
@@ -484,9 +517,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   await loadAllTrades();
+  initEntryRuleTable();
 });
-
-function getToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
 
 // ── 抽屜控制 ─────────────────────────────────────────
 function openDrawer(id, btn) {
@@ -945,7 +977,51 @@ async function deleteTrade(id) {
   }
 }
 
-// ── 歷史回測 ─────────────────────────────────────────
+// ── 指標規則表 ────────────────────────────────────────
+const INDICATOR_LABELS = {
+  price_breakout: '價格突破（近20日高點）',
+  volume_surge:   '量能放大（>1.5x均量）',
+  macd_positive:  'MACD 柱狀正值',
+  macd_golden:    'MACD 金叉（剛轉正）',
+  rsi_strong:     'RSI 強勢（55–75）',
+  ma_bullish:     '均線多頭排列',
+  bb_upper:       '布林上軌（>85%，偏貴）',
+  bb_lower:       '布林下軌（<15%，偏便宜）',
+};
+const RULE_DEFAULTS = {
+  price_breakout: 'optional',
+  volume_surge:   'optional',
+  macd_positive:  'must',
+  macd_golden:    'optional',
+  rsi_strong:     'optional',
+  ma_bullish:     'must',
+  bb_upper:       'ignore',
+  bb_lower:       'ignore',
+};
+
+function initEntryRuleTable() {
+  const tbody = document.getElementById('entryRuleTable');
+  if (!tbody) return;
+  tbody.innerHTML = Object.entries(INDICATOR_LABELS).map(([key, label]) => {
+    const def = RULE_DEFAULTS[key];
+    return `<tr style="border-bottom:1px solid var(--border-light)">
+      <td style="padding:5px 6px;font-size:11px">${label}</td>
+      ${['must','optional','exclude','ignore'].map(v => `
+        <td style="text-align:center;padding:4px 2px">
+          <input type="radio" name="rule_${key}" value="${v}" ${def===v?'checked':''} style="cursor:pointer">
+        </td>`).join('')}
+    </tr>`;
+  }).join('');
+}
+
+function getEntryRules() {
+  const result = {};
+  Object.keys(INDICATOR_LABELS).forEach(key => {
+    const checked = document.querySelector(`input[name="rule_${key}"]:checked`);
+    result[key] = checked ? checked.value : 'ignore';
+  });
+  return result;
+}
 async function runBacktest() {
   const token = getToken();
   if (!token) { showAlert('alertBt','請先在掃描器登入 Token','err'); return; }
@@ -953,26 +1029,29 @@ async function runBacktest() {
   const start = document.getElementById('bt-start').value;
   const end   = document.getElementById('bt-end').value;
   if (!code||!start||!end) { showAlert('alertBt','請填寫代號和日期','err'); return; }
-  const btn=document.getElementById('btBtn');
+  const btn = document.getElementById('btBtn');
   btn.disabled=true; btn.textContent='回測中...';
   document.getElementById('btResult').style.display='none';
   try {
     const body = {
       token, code,
-      start_date:start, end_date:end,
-      shares:     parseInt(document.getElementById('bt-shares').value)||1,
-      stop_loss:  parseFloat(document.getElementById('bt-sl').value)||7,
-      take_profit:parseFloat(document.getElementById('bt-tp').value)||15,
-      need_price_breakout:document.getElementById('bt-pb').checked,
-      need_volume_surge:  document.getElementById('bt-vs').checked,
-      need_macd_positive: document.getElementById('bt-mp').checked,
-      need_rsi_strong:    document.getElementById('bt-rs').checked,
-      need_ma_bullish:    document.getElementById('bt-ma').checked,
-      min_signals:parseInt(document.getElementById('bt-min').value)||3,
+      start_date:   start,
+      end_date:     end,
+      shares:       parseInt(document.getElementById('bt-shares').value)||1,
+      min_optional: parseInt(document.getElementById('bt-min-optional').value)||2,
+      entry:        getEntryRules(),
+      exit_rule: {
+        stop_loss:         parseFloat(document.getElementById('bt-sl').value)||7,
+        take_profit:       parseFloat(document.getElementById('bt-tp').value)||15,
+        max_hold_days:     parseInt(document.getElementById('bt-maxdays').value)||0,
+        exit_bad_signals:  parseInt(document.getElementById('bt-bad-sigs').value)||0,
+        bad_signal_window: parseInt(document.getElementById('bt-bad-window').value)||1,
+      },
+      cooldown_days: parseInt(document.getElementById('bt-cooldown').value)||0,
     };
-    const r=await fetch('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const r = await fetch('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if (!r.ok){const e=await r.json();throw new Error(e.detail||'錯誤');}
-    const d=await r.json();
+    const d = await r.json();
     renderBtResult(d);
     if (document.getElementById('bt-save').checked && d.trades.length) {
       for (const t of d.trades) {
@@ -992,16 +1071,37 @@ async function runBacktest() {
 function renderBtResult(d) {
   document.getElementById('btTitle').textContent=`${d.code}（${d.start_date}～${d.end_date}）`;
   const pc=d.total_pnl>=0?'color:var(--green)':'color:var(--red)';
+  const rr = d.rr_ratio || 0;
   document.getElementById('btSummary').innerHTML=[
-    ['交易次數',d.total_trades,''],
-    ['勝率',d.win_rate+'%',d.win_rate>=50?'color:var(--green)':'color:var(--red)'],
-    ['總損益',(d.total_pnl>=0?'+':'')+d.total_pnl.toLocaleString()+'元',pc],
-    ['平均持有',d.avg_hold_days+'天',''],
-    ['最大獲利','+'+d.max_win.toLocaleString(),'color:var(--green)'],
-    ['最大虧損',d.max_loss.toLocaleString(),'color:var(--red)'],
-    ['獲利次數',d.wins,'color:var(--green)'],
-    ['虧損次數',d.losses,'color:var(--red)'],
+    ['交易次數',    d.total_trades,  ''],
+    ['勝率',        d.win_rate+'%',  d.win_rate>=50?'color:var(--green)':'color:var(--red)'],
+    ['總損益',      (d.total_pnl>=0?'+':'')+d.total_pnl.toLocaleString()+'元', pc],
+    ['盈虧比',      rr+'x',          rr>=1.5?'color:var(--green)':rr>0?'color:#e67e22':'color:var(--red)'],
+    ['平均獲利',    '+'+(d.avg_win||0).toLocaleString()+'元', 'color:var(--green)'],
+    ['平均虧損',    (d.avg_loss||0).toLocaleString()+'元',    'color:var(--red)'],
+    ['平均持有',    d.avg_hold_days+'天', ''],
+    ['最大獲利',    '+'+(d.max_win||0).toLocaleString()+'元', 'color:var(--green)'],
+    ['最大虧損',    (d.max_loss||0).toLocaleString()+'元',    'color:var(--red)'],
+    ['獲利次數',    d.wins,           'color:var(--green)'],
   ].map(([l,v,c])=>`<div class="bt-box"><div class="bt-lbl">${l}</div><div class="bt-val" style="${c}">${v}</div></div>`).join('');
+
+  // 出場原因統計
+  if (d.exit_reasons && Object.keys(d.exit_reasons).length) {
+    const total = Object.values(d.exit_reasons).reduce((a,b)=>a+b,0);
+    const exitHtml = Object.entries(d.exit_reasons)
+      .sort((a,b)=>b[1]-a[1])
+      .map(([reason, cnt])=>`
+        <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-light);font-size:12px">
+          <span>${reason}</span>
+          <span><b>${cnt}</b> 次（${Math.round(cnt/total*100)}%）</span>
+        </div>`).join('');
+    document.getElementById('btSummary').innerHTML +=
+      `<div style="grid-column:1/-1;margin-top:6px">
+        <div style="font-size:11px;font-weight:600;color:var(--text-3);margin-bottom:4px">出場原因分佈</div>
+        ${exitHtml}
+      </div>`;
+  }
+
   const sells=d.trades.filter(t=>t.type==='sell');
   if (sells.length) {
     let cum=0;
