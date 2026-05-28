@@ -95,7 +95,6 @@ class StrategyRequest(BaseModel):
 def finmind_get(dataset, stock_id, start, end, token):
     """用 urllib GET 呼叫 FinMind，手動組 URL 避免 requests 編碼問題"""
     import json as _json, urllib.request, urllib.parse, urllib.error
-    # 只對 token 做 encoding（含特殊字元），其他參數直接拼接
     safe_token = urllib.parse.quote(token, safe='')
     url = (
         f"https://api.finmindtrade.com/api/v4/data"
@@ -109,10 +108,22 @@ def finmind_get(dataset, stock_id, start, end, token):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return _json.loads(resp.read().decode("utf-8"))
+            data = _json.loads(resp.read().decode("utf-8"))
+            # FinMind 有時用 200 回傳錯誤，需檢查 status
+            if isinstance(data, dict):
+                status = data.get('status', 200)
+                if status == 402:
+                    raise Exception("FinMind 請求次數已達上限，請等待約 1 小時後再試")
+                if status == 400:
+                    raise Exception(f"FinMind Token 無效：{data.get('msg','')}")
+            return data
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="ignore")
         print(f"[finmind] ERROR {e.code}: {body[:300]}")
+        if e.code == 402:
+            raise Exception("FinMind 請求次數已達上限，請等待約 1 小時後再試")
+        if e.code == 400:
+            raise Exception("FinMind Token 無效，請重新驗證")
         raise Exception(f"FinMind HTTP {e.code}: {body[:200]}")
 
 
