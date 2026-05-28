@@ -1075,22 +1075,280 @@ class TradeIn(BaseModel):
     fee_discount: Optional[float] = 0.6   # 手續費折扣
     is_daytrade:  Optional[bool]  = False  # 當沖（賣出稅 0.15%）
 
-class BacktestRequest(BaseModel):
-    token:               str
-    code:                str
-    start_date:          str
-    end_date:            str
-    shares:              int   = 1
-    stop_loss:           float = 7.0
-    take_profit:         float = 15.0
-    need_price_breakout: bool  = True
-    need_volume_surge:   bool  = True
-    need_macd_positive:  bool  = True
-    need_rsi_strong:     bool  = False
-    need_ma_bullish:     bool  = True
-    min_signals:         int   = 3
+class IndicatorRule(BaseModel):
+    """單一指標規則：must=必須成立, optional=選用(計分), exclude=必須不成立"""
+    price_breakout: str = 'optional'   # must / optional / exclude / ignore
+    volume_surge:   str = 'optional'
+    macd_positive:  str = 'must'
+    macd_golden:    str = 'optional'
+    rsi_strong:     str = 'optional'
+    ma_bullish:     str = 'must'
+    bb_upper:       str = 'ignore'     # 股價貼近上軌(>85%)
+    bb_lower:       str = 'ignore'     # 股價貼近下軌(<15%)
 
-@app.get("/journal")
+class ExitRule(BaseModel):
+    stop_loss:         float = 7.0
+    take_profit:       float = 15.0
+    max_hold_days:     int   = 60      # 持有天數上限（0=不限）
+    exit_bad_signals:  int   = 0       # 不佳指標出現幾項自動出場（0=不啟用）
+    bad_signal_window: int   = 3       # 連續幾天不佳才算（1=當天即出）
+
+class BacktestRequest(BaseModel):
+    token:       str
+    code:        str
+    start_date:  str
+    end_date:    str
+    shares:      int   = 1
+    min_optional: int  = 2     # 選用指標最少符合幾項才進場
+    entry:       IndicatorRule = IndicatorRule()
+    exit_rule:   ExitRule      = ExitRule()
+    cooldown_days: int = 0     # 出場後冷卻天數（0=等訊號重新符合即可）
+
+def calc_indicators(closes, volumes, highs, lows, i):
+    """計算第 i 天的所有指標，回傳 bool dict"""
+    n = len(closes)
+    price = float(closes.iloc[i])
+    high  = float(highs.iloc[i])
+    low   = float(lows.iloc[i])
+    vol   = float(volumes.iloc[i])
+
+    # MA
+    ma5  = float(closes.iloc[max(0,i-4):i+1].mean())
+    ma10 = float(closes.iloc[max(0,i-9):i+1].mean())
+    ma20 = float(closes.iloc[max(0,i-19):i+1].mean())
+
+    # 成交量
+    v_avg = float(volumes.iloc[max(0,i-19):i+1].mean())
+
+    # MACD
+    e12 = closes.ewm(span=12, adjust=False).mean().iloc[i]
+    e26 = closes.ewm(span=26, adjust=False).mean().iloc[i]
+    ml_s = closes.ewm(span=12, adjust=False).mean() - closes.ewm(span=26, adjust=False).mean()
+    hist_s = ml_s - ml_s.ewm(span=9, adjust=False).mean()
+    hist_now  = float(hist_s.iloc[i])
+    hist_prev = float(hist_s.iloc[i-1]) if i > 0 else 0
+
+    # RSI
+    delta = closes.diff()
+    gain  = delta.clip(lower=0).rolling(14, min_periods=1).mean()
+    loss  = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
+    rsi   = float((100 - 100 / (1 + gain / loss.where(loss!=0, other=1e-9))).iloc[i])
+
+    # 布林通道
+    bb_mid_v  = float(closes.iloc[max(0,i-19):i+1].mean())
+    bb_std_v  = float(closes.iloc[max(0,i-19):i+1].std()) if i >= 19 else 0
+    bb_up_v   = bb_mid_v + 2 * bb_std_v
+    bb_lo_v   = bb_mid_v - 2 * bb_std_v
+    bb_range  = bb_up_v - bb_lo_v
+    bb_pos    = ((price - bb_lo_v) / bb_range * 100) if bb_range > 0 else 50
+
+    # 20日高點
+    max20 = float(highs.iloc[max(0,i-20):i].max()) if i > 0 else price
+
+    return {
+        'price':         price,
+        'high':          high,
+        'low':           low,
+        'price_breakout': price >= max20 * 0.97,
+        'volume_surge':   vol >= v_avg * 1.5,
+        'macd_positive':  hist_now > 0,
+        'macd_golden':    hist_now > 0 and hist_prev <= 0,
+        'rsi_strong':     55 <= rsi <= 75,
+        'ma_bullish':     ma5 > ma10 > ma20,
+        'bb_upper':       bb_pos >= 85,
+        'bb_lower':       bb_pos <= 15,
+        'rsi':            rsi,
+        'bb_pos':         bb_pos,
+    }
+
+def check_entry(sig: dict, rule: IndicatorRule, min_optional: int) -> tuple:
+    """
+    檢查進場條件。
+    回傳 (可進場:bool, 觸發訊號:list, 分數:int)
+    """
+    fields = ['price_breakout','volume_surge','macd_positive','macd_golden',
+              'rsi_strong','ma_bullish','bb_upper','bb_lower']
+    rule_d = rule.dict()
+
+    # 排除條件：任一 exclude 指標成立 → 不可進場
+    for f in fields:
+        if rule_d[f] == 'exclude' and sig.get(f):
+            return False, [], 0
+
+    # 必須條件：所有 must 指標都要成立
+    for f in fields:
+        if rule_d[f] == 'must' and not sig.get(f):
+            return False, [], 0
+
+    # 選用條件：計算符合數量
+    optional_hit = [f for f in fields if rule_d[f] == 'optional' and sig.get(f)]
+    if len(optional_hit) < min_optional:
+        return False, [], 0
+
+    must_hit = [f for f in fields if rule_d[f] == 'must' and sig.get(f)]
+    return True, must_hit + optional_hit, len(must_hit) + len(optional_hit)
+
+def check_exit_signals(sig: dict, rule: IndicatorRule) -> int:
+    """計算當前有幾個「不佳」指標（進場條件的反面）"""
+    fields = ['price_breakout','volume_surge','macd_positive','macd_golden',
+              'rsi_strong','ma_bullish']
+    rule_d = rule.dict()
+    bad = 0
+    for f in fields:
+        if rule_d[f] in ('must', 'optional') and not sig.get(f):
+            bad += 1
+    return bad
+
+@app.post("/api/backtest")
+async def run_backtest(req: BacktestRequest):
+    """進階策略回測引擎"""
+    try:
+        df_raw = finmind_get('TaiwanStockPrice', req.code,
+                             req.start_date, req.end_date, req.token)
+        if not df_raw.get('data'):
+            raise HTTPException(status_code=400, detail="無歷史資料")
+        price_df = pd.DataFrame(df_raw['data']).sort_values('date').reset_index(drop=True)
+        for col in ['open','close','max','min']:
+            price_df[col] = pd.to_numeric(price_df[col], errors='coerce')
+        price_df['Trading_Volume'] = pd.to_numeric(
+            price_df['Trading_Volume'], errors='coerce').fillna(0)
+
+        closes  = price_df['close']
+        volumes = price_df['Trading_Volume']
+        highs   = price_df['max']
+        lows    = price_df['min']
+        n       = len(price_df)
+
+        trades       = []
+        trade_id     = 1
+        in_trade     = False
+        buy_price    = 0.0
+        buy_date     = ''
+        buy_idx      = 0
+        buy_signals  = []
+        buy_fee_amt  = 0
+        cooldown_end = -1         # 冷卻期結束的 index
+        bad_streak   = 0          # 連續不佳天數計數
+
+        for i in range(30, n):
+            date = str(price_df.iloc[i]['date'])
+            sig  = calc_indicators(closes, volumes, highs, lows, i)
+
+            if not in_trade:
+                # 冷卻期內跳過
+                if i < cooldown_end:
+                    continue
+
+                can_enter, hit_sigs, score = check_entry(sig, req.entry, req.min_optional)
+                if can_enter:
+                    buy_price   = sig['price']
+                    buy_date    = date
+                    buy_idx     = i
+                    buy_signals = hit_sigs
+                    buy_cost    = calc_fee(buy_price, req.shares, False)
+                    buy_fee_amt = buy_cost['fee']
+                    in_trade    = True
+                    bad_streak  = 0
+                    trades.append({
+                        'id': trade_id, 'type': 'buy', 'code': req.code,
+                        'date': date, 'price': buy_price, 'shares': req.shares,
+                        'amount': buy_cost['amount'], 'fee': buy_cost['fee'],
+                        'net': buy_cost['net'], 'signals': hit_sigs,
+                        'score': score, 'pnl': None, 'pnl_pct': None,
+                        'hold_days': None, 'exit_reason': None,
+                    })
+                    trade_id += 1
+            else:
+                hold_days   = i - buy_idx
+                price       = sig['price']
+                high        = sig['high']
+                low         = sig['low']
+                pnl_pct_now = (price - buy_price) / buy_price * 100
+                max_pnl     = (high - buy_price) / buy_price * 100
+                min_pnl     = (low  - buy_price) / buy_price * 100
+                exit_reason = None
+                exit_price  = price
+
+                # 1. 停損（用當日最低價判斷是否觸及）
+                if min_pnl <= -req.exit_rule.stop_loss:
+                    exit_reason = f'停損 -{req.exit_rule.stop_loss}%'
+                    exit_price  = round(buy_price * (1 - req.exit_rule.stop_loss/100), 2)
+
+                # 2. 停利（用當日最高價判斷是否觸及）
+                elif max_pnl >= req.exit_rule.take_profit:
+                    exit_reason = f'停利 +{req.exit_rule.take_profit}%'
+                    exit_price  = round(buy_price * (1 + req.exit_rule.take_profit/100), 2)
+
+                # 3. 持有天數上限
+                elif req.exit_rule.max_hold_days > 0 and hold_days >= req.exit_rule.max_hold_days:
+                    exit_reason = f'持有達{req.exit_rule.max_hold_days}天'
+
+                # 4. 不佳指標出場
+                elif req.exit_rule.exit_bad_signals > 0:
+                    bad_today = check_exit_signals(sig, req.entry)
+                    if bad_today >= req.exit_rule.exit_bad_signals:
+                        bad_streak += 1
+                    else:
+                        bad_streak = 0
+                    if bad_streak >= req.exit_rule.bad_signal_window:
+                        exit_reason = f'指標惡化（{req.exit_rule.exit_bad_signals}項×{req.exit_rule.bad_signal_window}天）'
+                        bad_streak  = 0
+
+                # 5. 區間最後一天強制出場
+                elif i == n - 1:
+                    exit_reason = '區間結束'
+
+                if exit_reason:
+                    sell_cost = calc_fee(exit_price, req.shares, True)
+                    pnl = calc_pnl(buy_price, exit_price, req.shares,
+                                   buy_fee_amt, sell_cost['fee'], sell_cost['tax'])
+                    trades.append({
+                        'id': trade_id, 'type': 'sell', 'code': req.code,
+                        'date': date, 'price': exit_price, 'shares': req.shares,
+                        'amount': sell_cost['amount'], 'fee': sell_cost['fee'],
+                        'tax': sell_cost['tax'], 'net': sell_cost['net'],
+                        'signals': [], 'pnl': pnl['net'], 'pnl_pct': pnl['pnl_pct'],
+                        'hold_days': hold_days, 'exit_reason': exit_reason,
+                        'buy_price': buy_price, 'buy_date': buy_date,
+                    })
+                    trade_id += 1
+                    in_trade  = False
+                    # 設定冷卻期
+                    cooldown_end = i + max(req.cooldown_days, 1) if req.cooldown_days > 0 else i + 1
+
+        # 統計
+        sells     = [t for t in trades if t['type']=='sell']
+        wins      = [t for t in sells if t['pnl'] > 0]
+        losses    = [t for t in sells if t['pnl'] <= 0]
+        total_pnl = sum(t['pnl'] for t in sells)
+        win_rate  = round(len(wins)/len(sells)*100,1) if sells else 0
+        avg_hold  = round(sum(t['hold_days'] for t in sells)/len(sells)) if sells else 0
+        max_win   = max((t['pnl'] for t in wins),   default=0)
+        max_loss  = min((t['pnl'] for t in losses), default=0)
+        avg_win_v = round(sum(t['pnl'] for t in wins)/len(wins))   if wins   else 0
+        avg_loss_v= round(sum(t['pnl'] for t in losses)/len(losses)) if losses else 0
+        rr_ratio  = round(abs(avg_win_v/avg_loss_v),2) if avg_loss_v != 0 else 0
+
+        # 出場原因統計
+        exit_reasons = {}
+        for t in sells:
+            k = t['exit_reason'] or '其他'
+            exit_reasons[k] = exit_reasons.get(k, 0) + 1
+
+        return {
+            'code': req.code, 'start_date': req.start_date, 'end_date': req.end_date,
+            'total_trades': len(sells), 'wins': len(wins), 'losses': len(losses),
+            'win_rate': win_rate, 'total_pnl': round(total_pnl),
+            'avg_hold_days': avg_hold, 'max_win': round(max_win),
+            'max_loss': round(max_loss), 'rr_ratio': rr_ratio,
+            'avg_win': avg_win_v, 'avg_loss': avg_loss_v,
+            'exit_reasons': exit_reasons,
+            'trades': trades,
+        }
+    except HTTPException: raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 async def journal_page():
     return FileResponse("static/journal.html")
 
