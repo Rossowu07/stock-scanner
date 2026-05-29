@@ -147,8 +147,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
         z-index:25;display:flex;flex-direction:column;
         max-height:calc(100vh - var(--topbar-h) - var(--bottomnav-h))}
 .drawer.open{transform:translateY(0)}
-.drawer-handle{width:36px;height:4px;background:var(--border);
-               border-radius:2px;margin:10px auto 0;flex-shrink:0}
+.drawer-handle{display:none}
 .drawer-header{display:flex;justify-content:space-between;align-items:center;
                padding:10px 16px 8px;flex-shrink:0}
 .drawer-title{font-size:15px;font-weight:600}
@@ -557,16 +556,6 @@ function closeDrawer(id) {
   document.getElementById('bnav-'+id).classList.remove('active');
   currentDrawer = null;
 }
-
-// 向上滑關閉
-['trades','backtest','stats'].forEach(id => {
-  let ty = 0;
-  const el = document.getElementById('drawer-'+id);
-  el.addEventListener('touchstart', e => { ty = e.touches[0].clientY; }, {passive:true});
-  el.addEventListener('touchend',   e => {
-    if (e.changedTouches[0].clientY - ty > 60) closeDrawer(id);
-  }, {passive:true});
-});
 
 // ── 代號輸入 ─────────────────────────────────────────
 // ── Token 檢查 ────────────────────────────────────────
